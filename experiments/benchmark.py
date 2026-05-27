@@ -6,7 +6,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 # Thêm thư mục gốc vào path để import src
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from src.multi_head import MultiHeadAttention
 
 # =====================================================================
