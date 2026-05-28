@@ -1,4 +1,17 @@
+"""
+Task 3: Multi-Head Attention Coordinator
+==========================================
+Quản lý việc tách/gộp các Head và điều phối tính toán Attention.
+
+- split_heads: Cắt ma trận lớn thành nhiều Head nhỏ
+- concat_heads: Gộp kết quả các Head lại
+- forward: Luồng chạy chính
+"""
+
 import numpy as np
+from core.layers import LinearLayer
+from .scaled_dot_product import scaled_dot_product_attention
+
 
 class MultiHeadAttention:
     def __init__(self, d_model, num_heads):
@@ -15,9 +28,9 @@ class MultiHeadAttention:
         assert d_model % num_heads == 0, "d_model phải chia hết cho num_heads"
         self.d_k = d_model // num_heads
 
-        # Khởi tạo Linear Layer cuối cùng (Task 1 sẽ làm phần chi tiết này, 
-        # ở đây mình tạo sẵn ma trận W_O ngẫu nhiên để test)
-        self.W_O = np.random.randn(d_model, d_model) * 0.01
+        # Khởi tạo Linear Layer cuối cùng (Output Projection)
+        # Sử dụng LinearLayer từ Task 1 với Xavier Initialization
+        self.W_O = LinearLayer(d_model, d_model)
 
     def split_heads(self, x):
         """
@@ -56,11 +69,14 @@ class MultiHeadAttention:
         
         return x_concatenated
 
-    def forward(self, Q, K, V, attention_core_function):
+    def forward(self, Q, K, V, mask=True):
         """
-        Luồng chạy chính của Task 3.
+        Luồng chạy chính của Multi-Head Attention.
+        
         :param Q, K, V: Các ma trận gốc nhận từ Task 1
-        :param attention_core_function: Hàm tính điểm của Task 2 truyền vào
+                         shape: (batch_size, seq_length, d_model)
+        :param mask: Có áp dụng Causal Masking hay không
+        :return: Ma trận đầu ra, shape (batch_size, seq_length, d_model)
         """
         # 1. Cắt bánh cho Q, K, V
         Q_split = self.split_heads(Q)
@@ -68,13 +84,15 @@ class MultiHeadAttention:
         V_split = self.split_heads(V)
 
         # 2. Đưa cho Task 2 xử lý (Tính Attention cho từng Head song song)
-        # (Task 2 sẽ nhận input là 4 chiều và trả ra output 4 chiều y hệt)
-        head_outputs = attention_core_function(Q_split, K_split, V_split)
+        # scaled_dot_product_attention hỗ trợ tính toán vectorized trên tất cả heads
+        head_outputs, attention_weights = scaled_dot_product_attention(
+            Q_split, K_split, V_split, mask=mask
+        )
 
         # 3. Gộp bánh lại
         concat_output = self.concat_heads(head_outputs)
 
-        # 4. Nhân với ma trận W_O cuối cùng để ra kết quả
-        final_output = concat_output @ self.W_O
+        # 4. Đẩy qua LinearLayer cuối cùng (Output Projection)
+        final_output = self.W_O.forward(concat_output)
 
         return final_output
