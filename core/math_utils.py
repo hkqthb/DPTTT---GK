@@ -20,17 +20,18 @@ def stable_softmax(x, axis=-1):
     :param axis: Trục để tính softmax (mặc định: trục cuối cùng)
     :return: Ma trận sau khi áp dụng softmax, tổng mỗi hàng = 1
     """
-    # Bước 1: Trừ đi giá trị lớn nhất theo trục để tránh overflow
+    # Bước 1: Trừ đi giá trị lớn nhất theo trục để tránh overflow.
+    # Nếu một hàng chỉ gồm -inf (ví dụ sau masking), giữ kết quả là 0 thay vì NaN.
     x_max = np.max(x, axis=axis, keepdims=True)
-    x_shifted = x - x_max
+    x_shifted = np.where(np.isfinite(x_max), x - x_max, -np.inf)
     
     # Bước 2: Tính e^x cho mỗi phần tử
     exp_x = np.exp(x_shifted)
     
-    # Bước 3: Chia cho tổng để chuẩn hóa thành xác suất
+    # Bước 3: Chia cho tổng để chuẩn hóa thành xác suất.
+    # Khi toàn bộ phần tử là -inf, tổng mũ bằng 0 và phân phối trả về toàn 0.
     sum_exp_x = np.sum(exp_x, axis=axis, keepdims=True)
-    
-    return exp_x / sum_exp_x
+    return np.divide(exp_x, sum_exp_x, out=np.zeros_like(exp_x), where=sum_exp_x != 0)
 
 
 def xavier_init(fan_in, fan_out):

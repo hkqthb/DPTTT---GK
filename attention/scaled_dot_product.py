@@ -40,9 +40,9 @@ def scaled_dot_product_attention(Q, K, V, mask=True):
     if mask:
         seq_len = scores.shape[-1]
         # Tạo mặt nạ tam giác dưới: vị trí hợp lệ = 1, vị trí bị che = 0
-        causal_mask = np.tril(np.ones((seq_len, seq_len)))
+        causal_mask = np.tril(np.ones((seq_len, seq_len), dtype=bool))
         # Biến vị trí bị che thành -inf (vì e^(-inf) = 0 sau softmax)
-        scores = np.where(causal_mask == 1, scores, -np.inf)
+        scores = np.where(causal_mask, scores, -np.inf)
     
     # Bước 3: Áp dụng Softmax để chuyển thành xác suất
     attention_weights = stable_softmax(scores, axis=-1)
