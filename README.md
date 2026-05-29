@@ -119,3 +119,14 @@ Dưới đây là dữ liệu đo đạc thực tế chạy trên hệ thống:
 2.  **Về Độ phức tạp Không gian (Space Complexity):**
     *   Dung lượng RAM tiêu tốn cho bản Vectorized tăng trưởng theo hàm parabol $O(L^2)$ (do phải lưu trữ ma trận điểm số tương quan kích thước $L \times L$). 
     *   Khi $L=5000$, bộ nhớ đỉnh cần cấp phát để tính toán attention pass đã lên tới **4.6 GB** (với kiểu dữ liệu `float32`). Điều này minh chứng cho "bức tường bộ nhớ" (Memory Wall) của cơ chế Attention cổ điển, giải thích vì sao các mô hình LLMs cần các giải thuật cải tiến như FlashAttention để giảm Space Complexity xuống $O(L)$.
+# DPTTT---GK
+Đồ án môn Độ phức tạp thuật toán - Xây dựng Self-Attention
+
+## Cách chạy  
+1. Tạo môi trường ảo
+   `python3 -m venv .venv`
+   `source .venv/bin/activate`
+2. Cài thư viện
+   `pip install -r requirements.txt`
+3. Chạy chương trình
+   `python3 main.py`
