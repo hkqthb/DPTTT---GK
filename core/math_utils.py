@@ -23,7 +23,8 @@ def stable_softmax(x, axis=-1):
     # Bước 1: Trừ đi giá trị lớn nhất theo trục để tránh overflow.
     # Nếu một hàng chỉ gồm -inf (ví dụ sau masking), giữ kết quả là 0 thay vì NaN.
     x_max = np.max(x, axis=axis, keepdims=True)
-    x_shifted = np.where(np.isfinite(x_max), x - x_max, -np.inf)
+    safe_x_max = np.where(np.isfinite(x_max), x_max, 0)
+    x_shifted = np.where(np.isfinite(x_max), x - safe_x_max, -np.inf)
     
     # Bước 2: Tính e^x cho mỗi phần tử
     exp_x = np.exp(x_shifted)
@@ -32,6 +33,35 @@ def stable_softmax(x, axis=-1):
     # Khi toàn bộ phần tử là -inf, tổng mũ bằng 0 và phân phối trả về toàn 0.
     sum_exp_x = np.sum(exp_x, axis=axis, keepdims=True)
     return np.divide(exp_x, sum_exp_x, out=np.zeros_like(exp_x), where=sum_exp_x != 0)
+
+
+def sinusoidal_positional_encoding(seq_len, d_model):
+    """
+    Tạo positional encoding dạng sin/cos như Transformer gốc.
+
+    Self-Attention chỉ nhìn quan hệ giữa các vector, nên nếu không cộng thông tin
+    vị trí thì mô hình không phân biệt được thứ tự token trong câu.
+
+    :param seq_len: Độ dài chuỗi token
+    :param d_model: Kích thước vector embedding
+    :return: Ma trận positional encoding, shape (seq_len, d_model)
+    """
+    if seq_len < 0:
+        raise ValueError("seq_len phải không âm")
+    if d_model <= 0:
+        raise ValueError("d_model phải lớn hơn 0")
+
+    positions = np.arange(seq_len)[:, np.newaxis]
+    div_terms = np.exp(
+        np.arange(0, d_model, 2) * (-np.log(10000.0) / d_model)
+    )
+
+    encoding = np.zeros((seq_len, d_model), dtype=np.float32)
+    encoding[:, 0::2] = np.sin(positions * div_terms)
+    if d_model > 1:
+        encoding[:, 1::2] = np.cos(positions * div_terms[: encoding[:, 1::2].shape[1]])
+
+    return encoding
 
 
 def xavier_init(fan_in, fan_out):

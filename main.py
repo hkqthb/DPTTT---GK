@@ -2,14 +2,14 @@
 Task 5: Main - Tích hợp hệ thống & Vòng lặp sinh từ (Autoregressive Generation)
 ==================================================================================
 File thực thi chính, ghép toàn bộ pipeline:
-    Text -> Tokenizer -> Embedding -> Linear Projections (Q,K,V) 
-         -> Multi-Head Attention -> Output Logits -> Sinh từ tiếp theo
+    Text -> Tokenizer -> Embedding + Positional Encoding
+         -> Multi-Head Self-Attention -> Output Logits -> Sinh từ tiếp theo
 
 Luồng Autoregressive:
     "Xin" -> Dự đoán "chào" -> "Xin chào" -> Dự đoán "các" -> ...
 
 Cơ chế sinh từ:
-    Model sử dụng bigram language model (xác suất chuyển tiếp ký tự) được
+    Model sử dụng n-gram language model (xác suất chuyển tiếp token) được
     học từ corpus huấn luyện, kết hợp với output của Attention pipeline.
     Điều này đảm bảo kết quả sinh ra là văn bản tiếng Việt có nghĩa,
     đồng thời vẫn demo đầy đủ luồng xử lý qua Self-Attention.
@@ -18,7 +18,7 @@ Cơ chế sinh từ:
 import numpy as np
 from data.tokenizer import Tokenizer
 from core.layers import LinearLayer
-from core.math_utils import stable_softmax
+from core.math_utils import stable_softmax, sinusoidal_positional_encoding
 from attention.multi_head import MultiHeadAttention
 
 
@@ -28,9 +28,8 @@ class TransformerGenerator:
     
     Bao gồm:
     - Tokenizer (Task 5): Chuyển text <-> token IDs
-    - Linear Projections (Task 1): Tạo Q, K, V
-    - Multi-Head Attention (Task 3 + Task 2): Xử lý attention
-    - Bigram LM: Học xác suất chuyển tiếp ký tự từ corpus
+    - Multi-Head Attention (Task 3 + Task 2): Tạo Q/K/V nội bộ và xử lý attention
+    - N-gram LM: Học xác suất chuyển tiếp token từ corpus
     """
     
     def __init__(self, d_model=64, num_heads=4):
@@ -46,12 +45,7 @@ class TransformerGenerator:
         # Task 5: Tokenizer
         self.tokenizer = Tokenizer(embed_dim=d_model)
         
-        # Task 1: Linear Projections (Q, K, V)
-        self.W_Q = LinearLayer(d_model, d_model)
-        self.W_K = LinearLayer(d_model, d_model)
-        self.W_V = LinearLayer(d_model, d_model)
-        
-        # Task 3: Multi-Head Attention (tích hợp Task 2 bên trong)
+        # Task 3: Multi-Head Attention hoàn chỉnh (bao gồm W_Q, W_K, W_V, W_O)
         self.mha = MultiHeadAttention(d_model, num_heads)
         
         # Output projection: từ d_model -> vocab_size (tạo sau khi build vocab)
@@ -156,38 +150,45 @@ class TransformerGenerator:
         """
         # Task 5: Text -> Embedding
         X = self.tokenizer.text_to_embedding(text, add_special_tokens=False)
-        
-        # Task 1: Linear Projections
-        Q = self.W_Q.forward(X)
-        K = self.W_K.forward(X)
-        V = self.W_V.forward(X)
-        
-        # Task 3 + Task 2: Multi-Head Attention
-        attn_output = self.mha.forward(Q, K, V, mask=True)
-        
+
+        # Positional Encoding: thêm thông tin thứ tự token trước Self-Attention
+        position_encoding = sinusoidal_positional_encoding(X.shape[1], self.d_model)
+        X = X + position_encoding[np.newaxis, :, :]
+
+        # Không có padding trong single-sentence forward, nhưng truyền mask rõ ràng
+        # để cùng API với batch/padding mask.
+        padding_mask = np.ones((X.shape[0], X.shape[1]), dtype=bool)
+
+        # Task 3 + Task 2: Multi-Head Self-Attention với causal mask
+        attn_output = self.mha.forward(X, mask=padding_mask, causal=True)
+
         # Output: Chuyển thành logits cho từng token trong vocab
         logits = self.output_layer.forward(attn_output)
         
         return logits
     
-    def generate(self, seed_text, max_new_tokens=20, temperature=1.0, blend_ratio=0.7):
+    def generate(self, seed_text, max_new_tokens=20, temperature=1.0, blend_ratio=0.85):
         """
         Vòng lặp tự hồi quy (Autoregressive Generation).
         
         Quy trình mỗi bước:
         1. Đưa chuỗi hiện tại vào pipeline Attention (forward pass)
         2. Lấy logits tại vị trí cuối cùng -> xác suất từ model (p_model)
-        3. Lấy xác suất bigram dựa trên ký tự cuối (p_bigram)
-        4. Kết hợp: p_final = blend_ratio * p_bigram + (1 - blend_ratio) * p_model
+        3. Lấy xác suất n-gram dựa trên ngữ cảnh cuối (p_ngram)
+        4. Kết hợp: p_final = blend_ratio * p_ngram + (1 - blend_ratio) * p_model
         5. Sampling token tiếp theo từ p_final
         6. Nối token mới vào chuỗi, lặp lại
         
         :param seed_text: Văn bản khởi đầu (ví dụ: "Xin")
         :param max_new_tokens: Số token tối đa cần sinh
         :param temperature: Độ "ngẫu nhiên" khi sampling (cao = đa dạng hơn)
-        :param blend_ratio: Tỷ lệ pha trộn bigram (0.0 = chỉ model, 1.0 = chỉ bigram)
+        :param blend_ratio: Tỷ lệ pha trộn n-gram (0.0 = chỉ model, 1.0 = chỉ n-gram)
         :return: Chuỗi văn bản đã sinh
         """
+        if temperature <= 0:
+            raise ValueError("temperature phải lớn hơn 0")
+        blend_ratio = float(np.clip(blend_ratio, 0.0, 1.0))
+
         current_text = seed_text
         generated_ids = []
         
@@ -274,8 +275,8 @@ class TransformerGenerator:
 # CHẠY CHÍNH
 # ==========================================
 if __name__ == "__main__":
-    # Corpus tiếng Việt để xây dựng từ điển và học bigram
-    # Corpus càng lớn -> bigram càng phong phú -> kết quả sinh càng tự nhiên
+    # Corpus tiếng Việt để xây dựng từ điển và học n-gram
+    # Corpus càng lớn -> n-gram càng phong phú -> kết quả sinh càng tự nhiên
     training_texts = [
         # Chào hỏi
         "Xin chào các bạn",
@@ -316,7 +317,7 @@ if __name__ == "__main__":
         "Đây là đồ án phân tích thuật toán",
         "Mô hình này rất đơn giản nhưng hiệu quả",
         "Kết quả rất tốt và chính xác",
-        # Thêm câu cho bigram coverage
+        # Thêm câu cho n-gram coverage
         "Các bạn có thể thấy kết quả",
         "Thế giới đang thay đổi nhanh chóng",
         "Ngôn ngữ lập trình Python rất phổ biến",
@@ -327,7 +328,7 @@ if __name__ == "__main__":
         "Tất cả mọi người đều có thể học",
     ]
     
-    # Khởi tạo, xây dựng vocab (word-level), và học bigram
+    # Khởi tạo, xây dựng vocab (word-level), và học n-gram
     generator = TransformerGenerator(d_model=64, num_heads=4)
     generator.build(training_texts)
     
@@ -347,7 +348,7 @@ if __name__ == "__main__":
     
     seeds = ["Xin chào", "Tôi đang", "Chúc các bạn", "Học máy"]
     for seed in seeds:
-        generator.generate(seed, max_new_tokens=10, temperature=0.5, blend_ratio=1.0)
+        generator.generate(seed, max_new_tokens=10, temperature=0.5, blend_ratio=0.9)
     
     # ── Demo 3: Tokenizer ──
     print("─" * 60)

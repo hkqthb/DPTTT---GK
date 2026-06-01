@@ -40,6 +40,9 @@ class Tokenizer:
         :param embed_dim: Kích thước vector embedding cho mỗi token
         :param mode: Chế độ tokenize - "word" (theo từ) hoặc "char" (theo ký tự)
         """
+        if mode not in {"word", "char"}:
+            raise ValueError("mode phải là 'word' hoặc 'char'")
+
         self.embed_dim = embed_dim
         self.mode = mode
         
@@ -190,14 +193,15 @@ class Tokenizer:
         
         return embeddings
     
-    def batch_encode(self, texts, max_length=None, add_special_tokens=True):
+    def batch_encode(self, texts, max_length=None, add_special_tokens=True, return_mask=False):
         """
         Mã hóa nhiều câu thành một batch với padding.
         
         :param texts: Danh sách các chuỗi văn bản
         :param max_length: Chiều dài tối đa (None = tự động theo câu dài nhất)
         :param add_special_tokens: Có thêm BOS/EOS hay không
-        :return: Ma trận embedding, shape (batch_size, max_len, embed_dim)
+        :param return_mask: Nếu True, trả thêm padding mask, True = token thật
+        :return: embeddings hoặc tuple (embeddings, padding_mask)
         """
         if self.embedding_matrix is None:
             raise RuntimeError("Chưa xây dựng từ điển! Gọi build_vocab() trước.")
@@ -212,15 +216,21 @@ class Tokenizer:
         # Padding các câu ngắn
         pad_id = self.token_to_id[self.PAD_TOKEN]
         padded_ids = []
+        padding_masks = []
         for ids in all_ids:
             if len(ids) < max_length:
+                valid_len = len(ids)
                 ids = ids + [pad_id] * (max_length - len(ids))
             else:
                 ids = ids[:max_length]
+                valid_len = max_length
             padded_ids.append(ids)
+            padding_masks.append([True] * valid_len + [False] * (max_length - valid_len))
         
         # Chuyển thành numpy array và tra bảng embedding
         padded_ids = np.array(padded_ids)  # shape: (batch_size, max_len)
         embeddings = self.embedding_matrix[padded_ids]  # shape: (batch_size, max_len, embed_dim)
         
+        if return_mask:
+            return embeddings, np.array(padding_masks, dtype=bool)
         return embeddings

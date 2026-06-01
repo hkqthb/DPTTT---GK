@@ -2,59 +2,60 @@ import os
 import sys
 import time
 import tracemalloc
+import argparse
 import numpy as np
 import matplotlib.pyplot as plt
 
-# Thêm thư mục gốc vào path để import src
+# Thêm thư mục gốc vào path để import các package attention/core
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from src.multi_head import MultiHeadAttention
+from attention.multi_head import MultiHeadAttention
+from attention.scaled_dot_product import scaled_dot_product_attention
+from core.math_utils import stable_softmax
 
 # =====================================================================
 # 1. SOFTMAX & ATTENTION IMPLEMENTATIONS
 # =====================================================================
 
-def stable_softmax(x, axis=-1):
-    """
-    Hàm Softmax ổn định số học (Numerical Stability) tránh tràn số (overflow).
-    Trừ đi giá trị lớn nhất theo hàng trước khi tính hàm mũ e^x.
-    """
-    x_max = np.max(x, axis=axis, keepdims=True)
-    exp_x = np.exp(x - x_max)
-    return exp_x / np.sum(exp_x, axis=axis, keepdims=True)
-
-
-def vectorized_attention_core(Q, K, V, mask=True):
+def vectorized_attention_core(Q, K, V, mask=None, causal=False):
     """
     TASK 2: Phiên bản Vector hóa sử dụng toán ma trận của NumPy.
     Input shape: (batch_size, num_heads, seq_length, d_k)
     Output shape: (batch_size, num_heads, seq_length, d_k)
     """
-    d_k = Q.shape[-1]
-    
-    # 1. Tính Attention Scores: S = (Q * K^T) / sqrt(d_k)
-    # Transpose K từ (B, H, L, d_k) thành (B, H, d_k, L) để nhân ma trận
-    K_T = np.transpose(K, (0, 1, 3, 2))
-    scores = np.matmul(Q, K_T) / np.sqrt(d_k)
-    
-    # 2. Causal Masking (Che giấu tương lai nếu mask=True)
-    if mask:
-        seq_length = Q.shape[-2]
-        # Ma trận tam giác trên (loại trừ đường chéo chính)
-        causal_mask = np.triu(np.ones((seq_length, seq_length)), k=1).astype(bool)
-        # Mở rộng chiều của mask (1, 1, L, L) để broadcast với scores
-        causal_mask = causal_mask[np.newaxis, np.newaxis, :, :]
-        # Ép các vị trí tương lai về -inf (để e^-inf = 0 sau Softmax)
-        scores = np.where(causal_mask, -np.inf, scores)
-        
-    # 3. Tính phân phối chú ý qua Softmax
-    probs = stable_softmax(scores, axis=-1)
-    
-    # 4. Nhân với ma trận Value V: Output = Probs * V
-    output = np.matmul(probs, V)
+    output, _ = scaled_dot_product_attention(Q, K, V, mask=mask, causal=causal)
     return output
 
 
-def naive_attention_core(Q, K, V, mask=True):
+def _build_valid_mask(mask, causal, target_shape):
+    """
+    Tạo mask bool cho bản naive.
+    Quy ước: True = vị trí được phép attention.
+    """
+    if isinstance(mask, (bool, np.bool_)):
+        causal = causal or bool(mask)
+        mask = None
+
+    batch_size, num_heads, query_len, key_len = target_shape
+    valid_mask = np.ones(target_shape, dtype=bool)
+
+    if causal:
+        causal_mask = np.tril(np.ones((query_len, key_len), dtype=bool))
+        valid_mask &= causal_mask[np.newaxis, np.newaxis, :, :]
+
+    if mask is not None:
+        mask = np.asarray(mask, dtype=bool)
+        if mask.ndim == 2 and mask.shape == (batch_size, key_len):
+            mask = mask[:, np.newaxis, np.newaxis, :]
+        elif mask.ndim == 2 and mask.shape == (query_len, key_len):
+            mask = mask[np.newaxis, np.newaxis, :, :]
+        elif mask.ndim == 3 and mask.shape == (batch_size, query_len, key_len):
+            mask = mask[:, np.newaxis, :, :]
+        valid_mask &= np.broadcast_to(mask, target_shape)
+
+    return valid_mask
+
+
+def naive_attention_core(Q, K, V, mask=None, causal=False):
     """
     TASK 4: Phiên bản Attention "ngây thơ" dùng vòng lặp for lồng nhau (O(L^2) Naive).
     Không dùng các hàm nhân ma trận song song của NumPy ở chiều seq_length.
@@ -65,6 +66,7 @@ def naive_attention_core(Q, K, V, mask=True):
     """
     batch_size, num_heads, seq_length, d_k = Q.shape
     output = np.zeros_like(V)
+    valid_mask = _build_valid_mask(mask, causal, (batch_size, num_heads, seq_length, seq_length))
     
     # Chuyển đổi sang Python list để tăng tốc độ truy cập phần tử trong vòng lặp Python thuần
     Q_list = Q.tolist()
@@ -84,14 +86,13 @@ def naive_attention_core(Q, K, V, mask=True):
             for i in range(seq_length):
                 q_i = q_head[i]
                 for j in range(seq_length):
-                    if mask and j > i:
+                    if not valid_mask[b, h, i, j]:
                         continue
-                    else:
-                        k_j = k_head[j]
-                        dot_prod = 0.0
-                        for d in range(d_k):
-                            dot_prod += q_i[d] * k_j[d]
-                        scores[i][j] = dot_prod / np.sqrt(d_k)
+                    k_j = k_head[j]
+                    dot_prod = 0.0
+                    for d in range(d_k):
+                        dot_prod += q_i[d] * k_j[d]
+                    scores[i][j] = dot_prod / np.sqrt(d_k)
             
             # Áp dụng Softmax theo hàng bằng vòng lặp
             probs = [[0.0] * seq_length for _ in range(seq_length)]
@@ -136,8 +137,8 @@ def verify_correctness():
     K = np.random.randn(b, h, l, d_k).astype(np.float32)
     V = np.random.randn(b, h, l, d_k).astype(np.float32)
     
-    out_vec = vectorized_attention_core(Q, K, V, mask=True)
-    out_naive = naive_attention_core(Q, K, V, mask=True)
+    out_vec = vectorized_attention_core(Q, K, V, causal=True)
+    out_naive = naive_attention_core(Q, K, V, causal=True)
     
     # So sánh sai số tuyệt đối
     diff = np.max(np.abs(out_vec - out_naive))
@@ -149,7 +150,7 @@ def verify_correctness():
 # 3. BENCHMARKING SUITE
 # =====================================================================
 
-def run_benchmarks():
+def run_benchmarks(quick=False):
     # Tham số cố định
     d_model = 256
     num_heads = 8
@@ -160,9 +161,13 @@ def run_benchmarks():
     
     # Tập kích thước Sequence Length cần đo đạc
     # Naive sẽ chạy với tập kích thước nhỏ hơn vì cực kỳ chậm ở L lớn
-    Ns_naive = [10, 50, 100, 250, 500]
-    # Vectorized chạy hết dải rộng để chứng minh O(L^2) thực tế
-    Ns_vectorized = [10, 50, 100, 250, 500, 1000, 1500, 2000, 3000, 4000, 5000]
+    if quick:
+        Ns_naive = [10, 20, 50]
+        Ns_vectorized = [10, 20, 50, 100]
+    else:
+        Ns_naive = [10, 50, 100, 250, 500]
+        # Vectorized chạy hết dải rộng để chứng minh O(L^2) thực tế
+        Ns_vectorized = [10, 50, 100, 250, 500, 1000, 1500, 2000, 3000, 4000, 5000]
     
     naive_times = []
     naive_memories = []
@@ -176,9 +181,7 @@ def run_benchmarks():
     print("--- Đang đo đạc Naive Attention ---")
     for N in Ns_naive:
         # Khởi tạo ma trận ngẫu nhiên
-        Q = np.random.randn(batch_size, N, d_model).astype(np.float32)
-        K = np.random.randn(batch_size, N, d_model).astype(np.float32)
-        V = np.random.randn(batch_size, N, d_model).astype(np.float32)
+        X = np.random.randn(batch_size, N, d_model).astype(np.float32)
         
         # Xác định số lần chạy (runs) để lấy trung bình (giảm số lần ở L lớn để tránh chờ lâu)
         runs = 3 if N <= 200 else 1
@@ -186,7 +189,7 @@ def run_benchmarks():
         # Đo thời gian
         start_time = time.perf_counter()
         for _ in range(runs):
-            _ = mha.forward(Q, K, V, naive_attention_core)
+            _ = mha.forward(X, causal=True, attention_fn=naive_attention_core)
         end_time = time.perf_counter()
         avg_time = ((end_time - start_time) / runs) * 1000  # ms
         
@@ -200,22 +203,20 @@ def run_benchmarks():
     print("\n--- Đang đo đạc Vectorized Attention ---")
     # --- 3.2 Đo đạc bản Vectorized ---
     for N in Ns_vectorized:
-        Q = np.random.randn(batch_size, N, d_model).astype(np.float32)
-        K = np.random.randn(batch_size, N, d_model).astype(np.float32)
-        V = np.random.randn(batch_size, N, d_model).astype(np.float32)
+        X = np.random.randn(batch_size, N, d_model).astype(np.float32)
         
         runs = 10 if N <= 1000 else 5
         
         # Đo thời gian
         start_time = time.perf_counter()
         for _ in range(runs):
-            _ = mha.forward(Q, K, V, vectorized_attention_core)
+            _ = mha.forward(X, causal=True, attention_fn=vectorized_attention_core)
         end_time = time.perf_counter()
         avg_time = ((end_time - start_time) / runs) * 1000  # ms
         
         # Đo bộ nhớ đỉnh
         tracemalloc.start()
-        _ = mha.forward(Q, K, V, vectorized_attention_core)
+        _ = mha.forward(X, causal=True, attention_fn=vectorized_attention_core)
         _, peak = tracemalloc.get_traced_memory()
         tracemalloc.stop()
         peak_mb = peak / (1024 * 1024)  # MB
@@ -356,7 +357,15 @@ def print_tables(Ns_naive, naive_times, naive_memories, Ns_vectorized, vectorize
 # =====================================================================
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Benchmark Naive vs Vectorized Attention")
+    parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="Chạy bộ benchmark nhỏ để kiểm tra nhanh pipeline",
+    )
+    args = parser.parse_args()
+
     verify_correctness()
-    Ns_naive, naive_times, naive_memories, Ns_vectorized, vectorized_times, vectorized_memories = run_benchmarks()
+    Ns_naive, naive_times, naive_memories, Ns_vectorized, vectorized_times, vectorized_memories = run_benchmarks(quick=args.quick)
     plot_results(Ns_naive, naive_times, naive_memories, Ns_vectorized, vectorized_times, vectorized_memories)
     print_tables(Ns_naive, naive_times, naive_memories, Ns_vectorized, vectorized_times, vectorized_memories)
