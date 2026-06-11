@@ -119,7 +119,9 @@ class TransformerGenerator:
                 trigram_counts[key][token_ids[i + 2]] += 1
         
         # ── Chuẩn hóa Bigram ──
-        alpha = 0.1  # Laplace smoothing
+        # Alpha nhỏ giúp bigram tập trung vào các token thật sự xuất hiện
+        # trong corpus, thay vì dàn đều xác suất sang toàn bộ vocab
+        alpha = 0.001  # Laplace smoothing rất nhỏ
         bigram_counts += alpha
         for special_id in self._special_token_ids:
             bigram_counts[:, special_id] = 0
@@ -167,7 +169,8 @@ class TransformerGenerator:
         
         return logits
     
-    def generate(self, seed_text, max_new_tokens=20, temperature=1.0, blend_ratio=0.85):
+    def generate(self, seed_text, max_new_tokens=20, temperature=1.0,
+                 blend_ratio=0.85, repetition_penalty=0.3):
         """
         Vòng lặp tự hồi quy (Autoregressive Generation).
         
@@ -176,18 +179,21 @@ class TransformerGenerator:
         2. Lấy logits tại vị trí cuối cùng -> xác suất từ model (p_model)
         3. Lấy xác suất n-gram dựa trên ngữ cảnh cuối (p_ngram)
         4. Kết hợp: p_final = blend_ratio * p_ngram + (1 - blend_ratio) * p_model
-        5. Sampling token tiếp theo từ p_final
-        6. Nối token mới vào chuỗi, lặp lại
+        5. Áp dụng repetition penalty (giảm xác suất từ đã sinh gần đây)
+        6. Sampling token tiếp theo từ p_final
+        7. Nối token mới vào chuỗi, lặp lại
         
         :param seed_text: Văn bản khởi đầu (ví dụ: "Xin")
         :param max_new_tokens: Số token tối đa cần sinh
         :param temperature: Độ "ngẫu nhiên" khi sampling (cao = đa dạng hơn)
         :param blend_ratio: Tỷ lệ pha trộn n-gram (0.0 = chỉ model, 1.0 = chỉ n-gram)
+        :param repetition_penalty: Hệ số phạt lặp (0.0 = không phạt, 1.0 = chặn hoàn toàn)
         :return: Chuỗi văn bản đã sinh
         """
         if temperature <= 0:
             raise ValueError("temperature phải lớn hơn 0")
         blend_ratio = float(np.clip(blend_ratio, 0.0, 1.0))
+        repetition_penalty = float(np.clip(repetition_penalty, 0.0, 1.0))
 
         current_text = seed_text
         generated_ids = []
@@ -236,6 +242,17 @@ class TransformerGenerator:
             # ---- Kết hợp n-gram với model output ----
             p_final = blend_ratio * p_ngram + (1 - blend_ratio) * p_model
             
+            # ---- Repetition Penalty ----
+            # Giảm xác suất của các token đã sinh gần đây (cửa sổ 5 token)
+            # Mức phạt giảm dần theo khoảng cách: từ mới sinh bị phạt nặng hơn
+            if repetition_penalty > 0 and len(generated_ids) > 0:
+                window = generated_ids[-5:]  # cửa sổ 5 token gần nhất
+                for i, past_id in enumerate(reversed(window)):
+                    # Token gần nhất bị phạt nặng nhất, xa hơn thì nhẹ hơn
+                    decay = repetition_penalty * (1.0 - i * 0.15)
+                    decay = max(decay, 0.05)  # giữ mức phạt tối thiểu
+                    p_final[past_id] *= (1.0 - decay)
+            
             # Chuẩn hóa lại (đảm bảo tổng = 1)
             p_sum = p_final.sum()
             if p_sum > 0:
@@ -278,54 +295,213 @@ if __name__ == "__main__":
     # Corpus tiếng Việt để xây dựng từ điển và học n-gram
     # Corpus càng lớn -> n-gram càng phong phú -> kết quả sinh càng tự nhiên
     training_texts = [
-        # Chào hỏi
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 1: Chào hỏi & Giao tiếp hàng ngày (20 câu)
+        # ══════════════════════════════════════════════════════════
         "Xin chào các bạn",
         "Xin chào thế giới",
         "Xin chào tất cả mọi người",
         "Xin lỗi tôi đến muộn",
         "Chào buổi sáng các bạn",
         "Chào mừng bạn đến đây",
-        # Thời tiết
-        "Hôm nay trời đẹp quá",
-        "Hôm nay tôi đi học",
-        "Hôm nay là một ngày tốt lành",
-        # Giới thiệu bản thân
+        "Chào buổi chiều mọi người",
+        "Xin chào và chào mừng đến lớp học",
+        "Rất vui được gặp các bạn",
+        "Rất vui được làm quen với bạn",
+        "Cảm ơn các bạn rất nhiều",
+        "Cảm ơn thầy cô đã hướng dẫn",
+        "Cảm ơn mọi người đã lắng nghe",
+        "Xin phép được trình bày",
+        "Chúc mọi người một ngày tốt lành",
+        "Chúc các bạn học tốt và thành công",
+        "Chúc bạn một ngày tốt lành",
+        "Chúc các bạn luôn vui vẻ",
+        "Chúc mọi người thành công",
+        "Hẹn gặp lại các bạn vào tuần sau",
+
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 2: Giới thiệu bản thân & Cuộc sống sinh viên (25 câu)
+        # ══════════════════════════════════════════════════════════
         "Tôi đang học lập trình",
         "Tôi là sinh viên năm ba",
+        "Tôi là sinh viên ngành công nghệ thông tin",
         "Tôi yêu Việt Nam",
         "Tôi thích học máy rất nhiều",
         "Tôi đang làm đồ án môn học",
-        # Công nghệ
-        "Python là ngôn ngữ lập trình tuyệt vời",
-        "Transformer thay đổi thế giới trí tuệ nhân tạo",
-        "Attention là cơ chế quan trọng nhất",
-        "Học máy là lĩnh vực rất thú vị",
-        "Trí tuệ nhân tạo đang phát triển nhanh",
-        "Mô hình ngôn ngữ lớn rất mạnh",
-        # Học tập
+        "Tôi đang làm đồ án phân tích thuật toán",
+        "Tôi đang nghiên cứu về trí tuệ nhân tạo",
+        "Tôi đang tìm hiểu về mô hình Transformer",
+        "Tôi rất thích lập trình bằng Python",
+        "Tôi muốn trở thành kỹ sư phần mềm giỏi",
+        "Tôi đã hoàn thành bài tập về nhà",
+        "Tôi cần ôn thi cuối kỳ môn này",
+        "Sinh viên cần học tốt và chăm chỉ",
+        "Sinh viên năm ba phải làm đồ án",
+        "Sinh viên công nghệ thông tin rất giỏi",
+        "Đời sinh viên rất vui và nhiều kỷ niệm",
         "Chúng ta cùng học nhé",
         "Chúng ta là bạn tốt",
-        "Học lập trình rất thú vị",
-        "Sinh viên cần học tốt",
-        "Đồ án môn học rất quan trọng",
-        # Chúc mừng
-        "Chúc bạn một ngày tốt lành",
-        "Chúc các bạn học tốt",
-        "Chúc mọi người thành công",
-        # Mô tả
-        "Đây là một ví dụ đơn giản",
-        "Đây là đồ án phân tích thuật toán",
-        "Mô hình này rất đơn giản nhưng hiệu quả",
-        "Kết quả rất tốt và chính xác",
-        # Thêm câu cho n-gram coverage
-        "Các bạn có thể thấy kết quả",
-        "Thế giới đang thay đổi nhanh chóng",
-        "Ngôn ngữ lập trình Python rất phổ biến",
-        "Một ngày tốt lành cho tất cả",
+        "Chúng ta cần chuẩn bị bài thuyết trình",
+        "Chúng ta hãy cùng nhau cố gắng",
+        "Các bạn có thể thấy kết quả rất rõ ràng",
+        "Các bạn hãy xem ví dụ sau đây",
+        "Tất cả mọi người đều có thể học lập trình",
         "Bạn có thể học lập trình dễ dàng",
-        "Rất vui được gặp các bạn",
-        "Cảm ơn các bạn rất nhiều",
-        "Tất cả mọi người đều có thể học",
+
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 3: Thời tiết & Hoạt động hàng ngày (15 câu)
+        # ══════════════════════════════════════════════════════════
+        "Hôm nay trời đẹp quá",
+        "Hôm nay trời nắng đẹp",
+        "Hôm nay tôi đi học",
+        "Hôm nay là một ngày tốt lành",
+        "Hôm nay chúng ta học bài mới",
+        "Hôm nay tôi rất vui vì được gặp bạn",
+        "Hôm nay lớp học rất sôi nổi",
+        "Ngày mai chúng ta sẽ thi giữa kỳ",
+        "Ngày mai tôi sẽ hoàn thành đồ án",
+        "Buổi sáng hôm nay rất đẹp",
+        "Buổi chiều chúng ta đi thư viện",
+        "Cuối tuần tôi sẽ ôn bài",
+        "Tối nay tôi sẽ viết code",
+        "Một ngày tốt lành cho tất cả",
+        "Một ngày mới bắt đầu với năng lượng tích cực",
+
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 4: Công nghệ & Lập trình (30 câu)
+        # ══════════════════════════════════════════════════════════
+        "Python là ngôn ngữ lập trình tuyệt vời",
+        "Python là ngôn ngữ lập trình phổ biến nhất hiện nay",
+        "Python rất dễ học và rất mạnh mẽ",
+        "Ngôn ngữ lập trình Python rất phổ biến",
+        "Lập trình là kỹ năng quan trọng của thế kỷ",
+        "Lập trình giúp giải quyết nhiều vấn đề thực tế",
+        "Học lập trình rất thú vị và bổ ích",
+        "Học lập trình cần kiên nhẫn và thực hành",
+        "Thuật toán là nền tảng của khoa học máy tính",
+        "Thuật toán sắp xếp và tìm kiếm rất quan trọng",
+        "Cấu trúc dữ liệu và thuật toán là môn học cơ sở",
+        "Phân tích độ phức tạp thuật toán là kỹ năng cần thiết",
+        "Đồ án phân tích thuật toán rất thú vị",
+        "Đồ án môn học rất quan trọng và cần thiết",
+        "Đồ án này giúp hiểu rõ cơ chế Attention",
+        "Đây là một ví dụ đơn giản nhưng hiệu quả",
+        "Đây là đồ án phân tích thuật toán của nhóm",
+        "Mã nguồn được viết bằng Python và NumPy",
+        "NumPy giúp tính toán ma trận rất nhanh",
+        "Kết quả rất tốt và chính xác",
+        "Kết quả thực nghiệm cho thấy thuật toán hoạt động tốt",
+        "Kết quả benchmark chứng minh hiệu quả của vectorization",
+        "Mô hình này rất đơn giản nhưng hiệu quả",
+        "Mô hình đã được kiểm thử kỹ lưỡng",
+        "Chúng tôi đã chạy thử nghiệm thành công",
+        "Chương trình chạy ổn định và cho kết quả chính xác",
+        "Hiệu suất tính toán được cải thiện đáng kể",
+        "Bài toán này có độ phức tạp thời gian là bậc hai",
+        "Độ phức tạp bậc hai là thách thức lớn nhất",
+        "Tối ưu thuật toán là công việc rất quan trọng",
+
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 5: AI & Deep Learning (30 câu)
+        # ══════════════════════════════════════════════════════════
+        "Transformer thay đổi thế giới trí tuệ nhân tạo",
+        "Transformer là kiến trúc nền tảng của các mô hình ngôn ngữ lớn",
+        "Transformer sử dụng cơ chế Self Attention để xử lý ngôn ngữ",
+        "Attention là cơ chế quan trọng nhất trong Transformer",
+        "Attention cho phép mô hình hiểu ngữ cảnh tốt hơn",
+        "Self Attention giúp mỗi từ nhìn toàn bộ các từ khác",
+        "Self Attention có độ phức tạp bậc hai theo chiều dài chuỗi",
+        "Multi Head Attention chia thành nhiều đầu để học các pattern khác nhau",
+        "Multi Head Attention là thành phần cốt lõi của Transformer",
+        "Trí tuệ nhân tạo đang phát triển rất nhanh",
+        "Trí tuệ nhân tạo thay đổi cuộc sống con người",
+        "Trí tuệ nhân tạo được ứng dụng trong nhiều lĩnh vực",
+        "Học máy là lĩnh vực rất thú vị",
+        "Học máy là nhánh quan trọng của trí tuệ nhân tạo",
+        "Học máy giúp máy tính học từ dữ liệu",
+        "Học sâu là bước tiến lớn của học máy",
+        "Mô hình ngôn ngữ lớn rất mạnh và thông minh",
+        "Mô hình ngôn ngữ lớn có thể hiểu và sinh văn bản",
+        "Mô hình ngôn ngữ lớn đang thay đổi thế giới",
+        "Xử lý ngôn ngữ tự nhiên là lĩnh vực quan trọng",
+        "Xử lý ngôn ngữ tự nhiên giúp máy hiểu tiếng người",
+        "ChatGPT là ứng dụng nổi bật của mô hình ngôn ngữ lớn",
+        "Dữ liệu là nhiên liệu của trí tuệ nhân tạo",
+        "Ma trận Attention thể hiện mối quan hệ giữa các từ",
+        "Softmax chuyển điểm số thành phân phối xác suất",
+        "Embedding chuyển từ thành vector số để máy hiểu được",
+        "Positional Encoding giúp mô hình biết thứ tự của từ",
+        "Query Key Value là ba thành phần của Attention",
+        "Causal Mask đảm bảo mỗi token chỉ nhìn về phía trước",
+        "Vectorization giúp tính toán nhanh hơn hàng trăm lần",
+
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 6: Thuyết trình & Đồ án (20 câu)
+        # ══════════════════════════════════════════════════════════
+        "Đồ án này trình bày về cơ chế Self Attention",
+        "Đồ án gồm năm thành phần chính",
+        "Nhóm chúng em xin trình bày đồ án giữa kỳ",
+        "Nhóm đã hoàn thành tất cả các yêu cầu",
+        "Nhóm đã kiểm thử kỹ lưỡng toàn bộ mã nguồn",
+        "Chúng em xin cảm ơn thầy cô đã lắng nghe",
+        "Phần tiếp theo là kết quả thực nghiệm",
+        "Phần này trình bày về kiến trúc hệ thống",
+        "Biểu đồ cho thấy thời gian tăng theo bậc hai",
+        "Bảng so sánh cho thấy vectorized nhanh hơn nhiều",
+        "Demo cho thấy pipeline hoạt động chính xác",
+        "Kết luận là Self Attention có độ phức tạp bậc hai",
+        "Hướng phát triển là cài đặt Flash Attention",
+        "Mục tiêu của đồ án là phân tích độ phức tạp",
+        "Báo cáo gồm mười slide chính",
+        "Slide này trình bày công thức toán học",
+        "Phần demo minh họa pipeline sinh văn bản",
+        "Chúng ta có thể thấy kết quả rất rõ ràng",
+        "Thực nghiệm chứng minh lý thuyết là đúng",
+        "Cảm ơn thầy cô và các bạn đã lắng nghe",
+
+        # ══════════════════════════════════════════════════════════
+        # NHÓM 7: Câu bổ sung cho n-gram coverage (40 câu)
+        # ══════════════════════════════════════════════════════════
+        "Thế giới đang thay đổi nhanh chóng",
+        "Thế giới công nghệ luôn đổi mới",
+        "Công nghệ thông tin là ngành rất có triển vọng",
+        "Công nghệ đang thay đổi cách chúng ta sống",
+        "Khoa học máy tính phát triển rất nhanh",
+        "Khoa học và công nghệ là chìa khóa thành công",
+        "Việt Nam đang phát triển mạnh về công nghệ",
+        "Việt Nam có nhiều kỹ sư phần mềm giỏi",
+        "Tương lai thuộc về trí tuệ nhân tạo",
+        "Tương lai của công nghệ rất tươi sáng",
+        "Nghiên cứu khoa học cần sự kiên nhẫn",
+        "Nghiên cứu về Attention đang rất sôi nổi",
+        "Dự án này rất có ý nghĩa thực tiễn",
+        "Dự án giúp hiểu rõ hơn về thuật toán",
+        "Giáo dục là nền tảng phát triển đất nước",
+        "Sáng tạo và đổi mới là chìa khóa thành công",
+        "Làm việc nhóm giúp hoàn thành dự án tốt hơn",
+        "Làm việc chăm chỉ sẽ mang lại kết quả tốt",
+        "Thực hành nhiều sẽ giúp bạn giỏi hơn",
+        "Thực hành là cách tốt nhất để học lập trình",
+        "Kiến thức là sức mạnh",
+        "Kiến thức nền tảng rất quan trọng",
+        "Mỗi ngày một tiến bộ hơn",
+        "Mỗi dự án là một bài học quý giá",
+        "Thành công đến từ sự nỗ lực không ngừng",
+        "Thành công cần kiên nhẫn và quyết tâm",
+        "Sự kiên nhẫn là chìa khóa của thành công",
+        "Đam mê công nghệ giúp tôi tiến bộ mỗi ngày",
+        "Đam mê và nỗ lực sẽ dẫn đến thành công",
+        "Hãy luôn cố gắng và không bao giờ bỏ cuộc",
+        "Hãy tin vào bản thân và nỗ lực hết mình",
+        "Nỗ lực hôm nay sẽ tạo nên thành công ngày mai",
+        "Mọi thứ đều bắt đầu từ những bước nhỏ",
+        "Mọi người đều có thể thành công nếu cố gắng",
+        "Đây là kết quả sau nhiều ngày làm việc",
+        "Đây là thành quả của cả nhóm",
+        "Chúng tôi rất tự hào về dự án này",
+        "Chúng tôi hy vọng thầy cô hài lòng",
+        "Xin chân thành cảm ơn tất cả mọi người",
+        "Xin cảm ơn và hẹn gặp lại",
     ]
     
     # Khởi tạo, xây dựng vocab (word-level), và học n-gram
@@ -348,7 +524,7 @@ if __name__ == "__main__":
     
     seeds = ["Xin chào", "Tôi đang", "Chúc các bạn", "Học máy"]
     for seed in seeds:
-        generator.generate(seed, max_new_tokens=10, temperature=0.5, blend_ratio=0.9)
+        generator.generate(seed, max_new_tokens=15, temperature=0.3, blend_ratio=0.95)
     
     # ── Demo 3: Tokenizer ──
     print("─" * 60)
