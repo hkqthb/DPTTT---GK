@@ -35,22 +35,37 @@ def _build_valid_mask(mask, causal, target_shape):
         causal = causal or bool(mask)
         mask = None
 
-    batch_size, num_heads, query_len, key_len = target_shape
     valid_mask = np.ones(target_shape, dtype=bool)
 
-    if causal:
-        causal_mask = np.tril(np.ones((query_len, key_len), dtype=bool))
-        valid_mask &= causal_mask[np.newaxis, np.newaxis, :, :]
+    if len(target_shape) == 4:
+        batch_size, num_heads, query_len, key_len = target_shape
+        if causal:
+            causal_mask = np.tril(np.ones((query_len, key_len), dtype=bool))
+            valid_mask &= causal_mask[np.newaxis, np.newaxis, :, :]
 
-    if mask is not None:
-        mask = np.asarray(mask, dtype=bool)
-        if mask.ndim == 2 and mask.shape == (batch_size, key_len):
-            mask = mask[:, np.newaxis, np.newaxis, :]
-        elif mask.ndim == 2 and mask.shape == (query_len, key_len):
-            mask = mask[np.newaxis, np.newaxis, :, :]
-        elif mask.ndim == 3 and mask.shape == (batch_size, query_len, key_len):
-            mask = mask[:, np.newaxis, :, :]
-        valid_mask &= np.broadcast_to(mask, target_shape)
+        if mask is not None:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.ndim == 2 and mask.shape == (batch_size, key_len):
+                mask = mask[:, np.newaxis, np.newaxis, :]
+            elif mask.ndim == 2 and mask.shape == (query_len, key_len):
+                mask = mask[np.newaxis, np.newaxis, :, :]
+            elif mask.ndim == 3 and mask.shape == (batch_size, query_len, key_len):
+                mask = mask[:, np.newaxis, :, :]
+            valid_mask &= np.broadcast_to(mask, target_shape)
+            
+    elif len(target_shape) == 3:
+        batch_size, query_len, key_len = target_shape
+        if causal:
+            causal_mask = np.tril(np.ones((query_len, key_len), dtype=bool))
+            valid_mask &= causal_mask[np.newaxis, :, :]
+
+        if mask is not None:
+            mask = np.asarray(mask, dtype=bool)
+            if mask.ndim == 2 and mask.shape == (batch_size, key_len):
+                mask = mask[:, np.newaxis, :]
+            elif mask.ndim == 2 and mask.shape == (query_len, key_len):
+                mask = mask[np.newaxis, :, :]
+            valid_mask &= np.broadcast_to(mask, target_shape)
 
     return valid_mask
 

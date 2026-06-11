@@ -18,22 +18,29 @@ def _expand_attention_mask(mask, target_shape):
     Chuẩn hóa mask về shape có thể broadcast với scores.
 
     Quy ước: True = vị trí được phép attention, False = vị trí bị che.
-    Hỗ trợ các shape phổ biến:
+    Hỗ trợ các shape phổ biến cho cả 3D (batch_size, query_len, key_len) 
+    và 4D (batch_size, num_heads, query_len, key_len):
     - (batch_size, key_len): padding mask cho key/value
     - (query_len, key_len): mask chung cho mọi batch/head
     - (batch_size, query_len, key_len): mask riêng cho từng batch
-    - shape đã broadcast được với (batch, heads, query_len, key_len)
     """
     mask = np.asarray(mask, dtype=bool)
-    batch_size, _, query_len, key_len = target_shape
-
-    if mask.ndim == 2 and mask.shape == (batch_size, key_len):
-        mask = mask[:, np.newaxis, np.newaxis, :]
-    elif mask.ndim == 2 and mask.shape == (query_len, key_len):
-        mask = mask[np.newaxis, np.newaxis, :, :]
-    elif mask.ndim == 3 and mask.shape == (batch_size, query_len, key_len):
-        mask = mask[:, np.newaxis, :, :]
-
+    
+    if len(target_shape) == 4:
+        batch_size, _, query_len, key_len = target_shape
+        if mask.ndim == 2 and mask.shape == (batch_size, key_len):
+            mask = mask[:, np.newaxis, np.newaxis, :]
+        elif mask.ndim == 2 and mask.shape == (query_len, key_len):
+            mask = mask[np.newaxis, np.newaxis, :, :]
+        elif mask.ndim == 3 and mask.shape == (batch_size, query_len, key_len):
+            mask = mask[:, np.newaxis, :, :]
+    elif len(target_shape) == 3:
+        batch_size, query_len, key_len = target_shape
+        if mask.ndim == 2 and mask.shape == (batch_size, key_len):
+            mask = mask[:, np.newaxis, :]
+        elif mask.ndim == 2 and mask.shape == (query_len, key_len):
+            mask = mask[np.newaxis, :, :]
+    
     try:
         return np.broadcast_to(mask, target_shape)
     except ValueError as exc:
