@@ -199,8 +199,7 @@ def api_attention(params: TextParams):
     )
     
     # Trả về tokens
-    token_ids = gen.tokenizer.encode(text, add_special_tokens=False)
-    tokens = [gen.tokenizer.id_to_token[tid] for tid in token_ids]
+    tokens = gen.tokenizer._tokenize(text)
     
     # attention_weights shape: (batch_size, num_heads, query_len, key_len)
     # Vì batch_size = 1, lấy index 0 và convert sang list
@@ -302,7 +301,7 @@ def api_generate_step(params: GenerateStepParams):
         
     # Trả về kết quả
     weights_list = attention_weights[0].tolist() # (num_heads, seq_len, seq_len)
-    tokens = [gen.tokenizer.id_to_token[tid] for tid in token_ids]
+    tokens = gen.tokenizer._tokenize(current_text)
     
     return {
         "next_token": next_token,
