@@ -4,6 +4,34 @@
 **Multi-Head Self-Attention** từ đầu bằng Python + NumPy, kèm benchmark
 so sánh bản naive dùng vòng lặp và bản vectorized dùng phép toán ma trận.
 
+---
+
+## 🚀 Chạy giao diện UI (Cách nhanh nhất)
+
+> **Yêu cầu**: Chỉ cần cài sẵn [Python 3.8+](https://www.python.org/downloads/) (nhớ tick ✅ "Add Python to PATH" khi cài).
+
+### Windows — Double-click
+
+1. **Double-click file `START_UI.bat`** trong thư mục project
+2. Chờ cài đặt tự động (lần đầu mất ~1-2 phút)
+3. Trình duyệt sẽ tự mở tại `http://localhost:8000`
+
+### Hoặc dùng Terminal (Windows / Mac / Linux)
+
+```bash
+python run.py
+```
+
+Script sẽ **tự động**:
+- ✅ Tạo virtual environment
+- ✅ Cài đặt tất cả thư viện cần thiết
+- ✅ Khởi động web server
+- ✅ Mở trình duyệt
+
+> **Tắt server**: Nhấn `Ctrl + C` trong cửa sổ terminal.
+
+---
+
 ## Điểm đã triển khai
 
 - Scaled Dot-Product Attention:
@@ -16,6 +44,7 @@ so sánh bản naive dùng vòng lặp và bản vectorized dùng phép toán ma
 - Tokenizer word-level/char-level, batch padding và padding mask
 - Benchmark naive vs vectorized
 - Unit tests cho attention core, multi-head, positional encoding và tokenizer mask
+- **Interactive Web UI** để trực quan hóa Attention, sinh văn bản, và benchmark
 
 ## Cấu trúc thư mục
 
@@ -34,15 +63,23 @@ DPTTT---GK/
 │   └── plots/                  # Biểu đồ benchmark
 ├── tests/
 │   └── test_attention.py       # Unit tests
+├── ui/
+│   ├── index.html              # Giao diện web chính
+│   ├── style.css               # Stylesheet (Dark/Light theme)
+│   └── app.js                  # Logic frontend JavaScript
+├── app.py                      # Backend API (FastAPI)
 ├── main.py                     # Demo pipeline Attention + n-gram generation
+├── run.py                      # 🚀 Script khởi động UI (1 lệnh duy nhất)
+├── START_UI.bat                # 🚀 Double-click chạy trên Windows
 └── requirements.txt
 ```
 
-## Cài đặt
+## Cài đặt (thủ công)
 
 ```bash
 python -m venv .venv
-.venv\Scripts\activate
+.venv\Scripts\activate          # Windows
+# source .venv/bin/activate     # Mac/Linux
 pip install -r requirements.txt
 ```
 
@@ -52,7 +89,7 @@ Trên Windows terminal, nếu gặp lỗi in tiếng Việt, chạy thêm:
 $env:PYTHONIOENCODING="utf-8"
 ```
 
-## Chạy demo
+## Chạy demo (console)
 
 ```bash
 python main.py

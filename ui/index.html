@@ -1,0 +1,308 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-Head Self-Attention Simulator</title>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <!-- FontAwesome Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="glow-bg"></div>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar">
+            <div class="brand">
+                <i class="fa-solid fa-brain brand-icon"></i>
+                <div class="brand-text">
+                    <h1>Self-Attention</h1>
+                    <span>Interactive Visualizer</span>
+                </div>
+            </div>
+            
+            <nav class="nav-menu">
+                <button class="nav-item active" data-tab="visualizer">
+                    <i class="fa-solid fa-eye"></i> Visualizer Attention
+                </button>
+                <button class="nav-item" data-tab="generator">
+                    <i class="fa-solid fa-pen-nib"></i> Text Generator
+                </button>
+                <button class="nav-item" data-tab="benchmark">
+                    <i class="fa-solid fa-chart-line"></i> Performance Benchmark
+                </button>
+                <button class="nav-item" data-tab="config">
+                    <i class="fa-solid fa-sliders"></i> Model Configuration
+                </button>
+            </nav>
+            
+            <div class="sidebar-footer">
+                <p><i class="fa-solid fa-code"></i> Python + NumPy Simulation</p>
+                <span>v1.0.0</span>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <!-- HEADER -->
+            <header class="top-bar">
+                <div class="page-title">
+                    <h2 id="current-tab-title">Visualizer Attention</h2>
+                    <p id="current-tab-desc">Trực quan hóa trọng số Self-Attention của các head trên chuỗi ký tự.</p>
+                </div>
+                <div class="top-bar-actions">
+                    <button id="btn-theme-toggle" class="theme-btn" title="Chuyển đổi Giao diện">
+                        <i class="fa-solid fa-sun"></i>
+                    </button>
+                    <div class="model-badge">
+                        <div class="badge-dot"></div>
+                        <span id="badge-info">Active: d_model=64 | Heads=4</span>
+                    </div>
+                </div>
+            </header>
+
+            <!-- TAB 1: VISUALIZER -->
+            <section class="tab-content active" id="tab-visualizer">
+                <div class="grid-layout">
+                    <!-- Left Control Card -->
+                    <div class="card control-card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-keyboard"></i> Nhập câu phân tích</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="input-group">
+                                <label for="visualizer-input">Văn bản tiếng Việt:</label>
+                                <textarea id="visualizer-input" placeholder="Nhập câu tiếng Việt vào đây...">Transformer sử dụng cơ chế Self Attention để xử lý ngôn ngữ</textarea>
+                            </div>
+                            <div class="suggested-prompts">
+                                <span>Mẫu nhanh:</span>
+                                <button class="prompt-btn">Học máy là lĩnh vực rất thú vị</button>
+                                <button class="prompt-btn">Đồ án này trình bày về cơ chế Self Attention</button>
+                                <button class="prompt-btn">Chúng em xin cảm ơn thầy cô đã lắng nghe</button>
+                            </div>
+                            <button id="btn-analyze" class="btn btn-primary btn-block">
+                                <i class="fa-solid fa-circle-play"></i> Phân Tích Attention
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Right Visualization Card -->
+                    <div class="card viz-card">
+                        <div class="card-header viz-header">
+                            <h3><i class="fa-solid fa-cubes"></i> Attention Weights Heatmap</h3>
+                            <div class="head-selector" id="head-tabs">
+                                <!-- Generated Dynamically -->
+                                <button class="head-btn active" data-head="mean">Average</button>
+                                <button class="head-btn" data-head="0">Head 0</button>
+                                <button class="head-btn" data-head="1">Head 1</button>
+                                <button class="head-btn" data-head="2">Head 2</button>
+                                <button class="head-btn" data-head="3">Head 3</button>
+                            </div>
+                        </div>
+                        <div class="card-body viz-body">
+                            <div class="heatmap-wrapper">
+                                <div class="heatmap-container" id="heatmap-grid">
+                                    <!-- Rendered by JS -->
+                                    <div class="heatmap-placeholder">
+                                        <i class="fa-solid fa-table-cells placeholder-icon"></i>
+                                        <p>Nhấp "Phân Tích Attention" để xem ma trận trọng số</p>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="heatmap-legend">
+                                <span>Ít chú ý (0.0)</span>
+                                <div class="legend-bar"></div>
+                                <span>Chú ý nhiều nhất (1.0)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 2: AUTOREGRESSIVE GENERATOR -->
+            <section class="tab-content" id="tab-generator">
+                <div class="grid-layout">
+                    <!-- Left Control Card -->
+                    <div class="card control-card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-wand-magic-sparkles"></i> Cấu hình Sinh Từ</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="input-group">
+                                <label for="generator-seed">Seed Text (Từ khởi đầu):</label>
+                                <input type="text" id="generator-seed" value="Tôi đang">
+                            </div>
+                            <div class="suggested-seeds">
+                                <span>Mẫu nhanh:</span>
+                                <button class="seed-btn">Xin chào</button>
+                                <button class="seed-btn">Học máy</button>
+                                <button class="seed-btn">Chúc các bạn</button>
+                            </div>
+                            
+                            <div class="slider-group">
+                                <div class="slider-label">
+                                    <span>N-gram vs Model Ratio:</span>
+                                    <span class="value-display" id="blend-val">0.95</span>
+                                </div>
+                                <input type="range" id="generator-blend" min="0" max="1" step="0.05" value="0.95">
+                                <div class="slider-desc">Tỉ lệ trộn xác suất (Gần 1.0 = ưu tiên cụm n-gram thực tế, Gần 0.0 = ưu tiên mô hình attention)</div>
+                            </div>
+
+                            <div class="slider-group">
+                                <div class="slider-label">
+                                    <span>Temperature (Nhiệt độ):</span>
+                                    <span class="value-display" id="temp-val">0.30</span>
+                                </div>
+                                <input type="range" id="generator-temp" min="0.1" max="2.0" step="0.05" value="0.30">
+                                <div class="slider-desc">Giá trị cao làm câu sinh ra đa dạng hơn nhưng dễ vô nghĩa.</div>
+                            </div>
+
+                            <div class="gen-buttons-layout">
+                                <button id="btn-gen-auto" class="btn btn-primary btn-block">
+                                    <i class="fa-solid fa-play"></i> Sinh Tự Động
+                                </button>
+                                <div class="button-row">
+                                    <button id="btn-gen-step" class="btn btn-secondary flex-1">
+                                        <i class="fa-solid fa-shoe-prints"></i> Bước Tiếp Theo
+                                    </button>
+                                    <button id="btn-gen-reset" class="btn btn-danger">
+                                        <i class="fa-solid fa-rotate-left"></i> Reset
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Right Generation Output Card -->
+                    <div class="card viz-card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-quote-left"></i> Văn bản sinh ra</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="generator-output-container">
+                                <div class="output-text" id="generator-output-text">
+                                    <span class="seed-part">Tôi đang</span>
+                                </div>
+                            </div>
+                            
+                            <div class="step-details-grid">
+                                <!-- Top Token Probs Chart -->
+                                <div class="chart-box">
+                                    <h4><i class="fa-solid fa-square-poll-horizontal"></i> Phân Phối Xác Suất (Top 10 candidates)</h4>
+                                    <div class="chart-wrapper">
+                                        <canvas id="candidatesChart"></canvas>
+                                    </div>
+                                </div>
+
+                                <!-- Text Highlight Visualizer -->
+                                <div class="attention-highlight-box">
+                                    <h4><i class="fa-solid fa-highlighter"></i> Trọng số Attention hiện tại (Token cuối tập trung vào đâu?)</h4>
+                                    <div class="highlight-text-wrapper" id="highlight-tokens-container">
+                                        <!-- Highlighted tokens go here -->
+                                        <p class="placeholder-text">Bắt đầu sinh từ để xem Attention Highlight</p>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 3: BENCHMARK -->
+            <section class="tab-content" id="tab-benchmark">
+                <div class="grid-layout single-col">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-gauge-high"></i> So sánh hiệu năng Vectorized vs Naive Attention</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="benchmark-control">
+                                <div class="benchmark-desc">
+                                    <p>Chạy thuật toán Attention ở hai phiên bản và so sánh thời gian thực thi (ms):</p>
+                                    <ul>
+                                        <li><strong>Vectorized (O(L^2) Matrix ops)</strong>: Dùng NumPy viết tối ưu bằng phép nhân ma trận đa chiều, tính toán song song.</li>
+                                        <li><strong>Naive (O(L^2) Loops)</strong>: Dùng các vòng lặp for lồng nhau. Rất chậm khi chuỗi dài.</li>
+                                    </ul>
+                                </div>
+                                <button id="btn-run-benchmark" class="btn btn-primary">
+                                    <i class="fa-solid fa-bolt"></i> Bắt đầu Benchmark
+                                </button>
+                            </div>
+
+                            <div class="benchmark-results-grid">
+                                <div class="chart-container">
+                                    <canvas id="benchmarkChart"></canvas>
+                                </div>
+                                <div class="table-container">
+                                    <table class="benchmark-table" id="benchmark-table">
+                                        <thead>
+                                            <tr>
+                                                <th>Sequence Length (L)</th>
+                                                <th>Vectorized (ms)</th>
+                                                <th>Naive Loop (ms)</th>
+                                                <th>Speedup Factor</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <!-- Dynamic rows -->
+                                            <tr class="placeholder-row">
+                                                <td colspan="4">Nhấp "Bắt đầu Benchmark" để đo hiệu năng</td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- TAB 4: CONFIG -->
+            <section class="tab-content" id="tab-config">
+                <div class="grid-layout single-col">
+                    <div class="card">
+                        <div class="card-header">
+                            <h3><i class="fa-solid fa-sliders"></i> Cấu hình kiến trúc Mô hình</h3>
+                        </div>
+                        <div class="card-body">
+                            <div class="config-grid">
+                                <div class="config-field">
+                                    <label for="cfg-dmodel">Embedding Dimension (d_model):</label>
+                                    <select id="cfg-dmodel">
+                                        <option value="16">16 (Siêu nhẹ)</option>
+                                        <option value="32">32</option>
+                                        <option value="64" selected>64 (Mặc định)</option>
+                                        <option value="128">128</option>
+                                        <option value="256">256 (Phức tạp hơn)</option>
+                                    </select>
+                                    <span class="helper-text">Kích thước không gian vector của token embedding.</span>
+                                </div>
+
+                                <div class="config-field">
+                                    <label for="cfg-heads">Number of Heads (Số đầu chú ý):</label>
+                                    <select id="cfg-heads">
+                                        <option value="1">1 Head (Single-Head Attention)</option>
+                                        <option value="2">2 Heads</option>
+                                        <option value="4" selected>4 Heads (Mặc định)</option>
+                                        <option value="8">8 Heads</option>
+                                    </select>
+                                    <span class="helper-text">Chú ý: <code>d_model</code> phải chia hết cho số Heads. (d_k = d_model / Heads).</span>
+                                </div>
+                            </div>
+
+                            <button id="btn-reinit-model" class="btn btn-primary">
+                                <i class="fa-solid fa-wrench"></i> Khởi tạo & Xây dựng lại mô hình
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+    <script src="/static/app.js"></script>
+</body>
+</html>
