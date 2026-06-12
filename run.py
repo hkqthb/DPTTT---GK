@@ -24,7 +24,7 @@ import webbrowser
 # === CẤU HÌNH ===
 PORT = 8000
 HOST = "127.0.0.1"
-VENV_DIR = ".venv"
+VENV_DIR = ".venv_win" if platform.system() == "Windows" else ".venv"
 
 def get_python_executable():
     """Lấy đường dẫn python trong venv."""
