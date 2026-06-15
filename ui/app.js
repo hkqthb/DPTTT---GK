@@ -374,6 +374,9 @@ document.addEventListener("DOMContentLoaded", () => {
             candidatesChart.destroy();
             candidatesChart = null;
         }
+
+        btnGenStep.disabled = false;
+        btnGenAuto.disabled = false;
     }
 
     async function generateStep() {
@@ -382,6 +385,7 @@ document.addEventListener("DOMContentLoaded", () => {
         }
 
         btnGenStep.disabled = true;
+        let reachedEos = false;
 
         try {
             const response = await fetch("/api/generate_step", {
@@ -405,8 +409,15 @@ document.addEventListener("DOMContentLoaded", () => {
             // Cập nhật text hiện tại
             currentGenerateText = data.new_text;
             
+            // Tránh trình duyệt hiểu nhầm <EOS> là thẻ HTML
+            const displayToken = data.next_token.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
             // Update Output DOM
-            genOutputContainer.innerHTML += `${delimiter}<span class="gen-part" style="color: var(--primary); font-weight: 500;">${data.next_token}</span>`;
+            if (data.next_token === "<EOS>") {
+                genOutputContainer.innerHTML += `${delimiter}<span class="gen-part" style="color: var(--accent); font-weight: 700; background: rgba(244, 63, 94, 0.15); padding: 2px 6px; border-radius: 4px; border: 1px solid var(--accent); margin: 0 4px;">${displayToken}</span>`;
+            } else {
+                genOutputContainer.innerHTML += `${delimiter}<span class="gen-part" style="color: var(--primary); font-weight: 500;">${displayToken}</span>`;
+            }
 
             // Vẽ biểu đồ candidates
             renderCandidatesChart(data.top_candidates);
@@ -414,13 +425,25 @@ document.addEventListener("DOMContentLoaded", () => {
             // Vẽ Attention Highlight
             renderAttentionHighlight(data.tokens, data.attention_weights);
 
+            // Dừng sinh tự động nếu gặp EOS
+            if (data.next_token === "<EOS>") {
+                stopAutoGeneration();
+                reachedEos = true;
+                btnGenAuto.disabled = true;
+                return false;
+            }
+
             return true;
         } catch (error) {
             console.error(error);
             stopAutoGeneration();
             return false;
         } finally {
-            btnGenStep.disabled = false;
+            if (reachedEos) {
+                btnGenStep.disabled = true;
+            } else {
+                btnGenStep.disabled = false;
+            }
         }
     }
 

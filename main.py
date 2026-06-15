@@ -15,6 +15,7 @@ Cơ chế sinh từ:
     đồng thời vẫn demo đầy đủ luồng xử lý qua Self-Attention.
 """
 
+import os
 import numpy as np
 from data.tokenizer import Tokenizer
 from core.layers import LinearLayer
@@ -169,6 +170,62 @@ class TransformerGenerator:
         
         return logits
     
+    def load_trained_weights(self, weights_path="model_weights.npy"):
+        """
+        Nạp trọng số đã huấn luyện từ PyTorch vào mô hình NumPy.
+        
+        File trọng số được tạo bởi train_pytorch.py, chứa các ma trận:
+        - embedding_matrix: Ma trận embedding cho Tokenizer
+        - W_Q_W, W_Q_b: Trọng số phép chiếu Query
+        - W_K_W, W_K_b: Trọng số phép chiếu Key
+        - W_V_W, W_V_b: Trọng số phép chiếu Value
+        - W_O_W, W_O_b: Trọng số Output Projection
+        - output_layer_W, output_layer_b: Trọng số lớp chiếu đầu ra
+        
+        :param weights_path: Đường dẫn tới file .npy chứa trọng số
+        :return: True nếu nạp thành công, False nếu không
+        """
+        # Tìm file trọng số: thử đường dẫn tuyệt đối, rồi thử cùng thư mục với script
+        if not os.path.exists(weights_path):
+            alt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), weights_path)
+            if os.path.exists(alt_path):
+                weights_path = alt_path
+            else:
+                print(f"[Generator] Không tìm thấy file trọng số '{weights_path}', "
+                      f"giữ nguyên trọng số ngẫu nhiên (Xavier init).")
+                return False
+        
+        try:
+            weights = np.load(weights_path, allow_pickle=True).item()
+            
+            # 1. Nạp ma trận Embedding
+            self.tokenizer.embedding_matrix = weights["embedding_matrix"]
+            
+            # 2. Nạp trọng số Multi-Head Attention (W_Q, W_K, W_V, W_O)
+            self.mha.W_Q.W = weights["W_Q_W"]
+            self.mha.W_Q.b = weights["W_Q_b"]
+            
+            self.mha.W_K.W = weights["W_K_W"]
+            self.mha.W_K.b = weights["W_K_b"]
+            
+            self.mha.W_V.W = weights["W_V_W"]
+            self.mha.W_V.b = weights["W_V_b"]
+            
+            self.mha.W_O.W = weights["W_O_W"]
+            self.mha.W_O.b = weights["W_O_b"]
+            
+            # 3. Nạp trọng số Output Layer
+            if self.output_layer is not None:
+                self.output_layer.W = weights["output_layer_W"]
+                self.output_layer.b = weights["output_layer_b"]
+            
+            print(f"[Generator] ✅ Đã nạp trọng số đã huấn luyện từ '{weights_path}'")
+            return True
+            
+        except Exception as e:
+            print(f"[Generator] ❌ Lỗi khi nạp trọng số: {e}")
+            return False
+    
     def generate(self, seed_text, max_new_tokens=20, temperature=1.0,
                  blend_ratio=0.85, repetition_penalty=0.3):
         """
@@ -243,13 +300,13 @@ class TransformerGenerator:
             p_final = blend_ratio * p_ngram + (1 - blend_ratio) * p_model
             
             # ---- Repetition Penalty ----
-            # Giảm xác suất của các token đã sinh gần đây (cửa sổ 5 token)
+            # Giảm xác suất của các token đã sinh gần đây (cửa sổ 15 token)
             # Mức phạt giảm dần theo khoảng cách: từ mới sinh bị phạt nặng hơn
             if repetition_penalty > 0 and len(generated_ids) > 0:
-                window = generated_ids[-5:]  # cửa sổ 5 token gần nhất
+                window = generated_ids[-15:]  # cửa sổ 15 token gần nhất
                 for i, past_id in enumerate(reversed(window)):
                     # Token gần nhất bị phạt nặng nhất, xa hơn thì nhẹ hơn
-                    decay = repetition_penalty * (1.0 - i * 0.15)
+                    decay = repetition_penalty * (1.0 - i * 0.06)
                     decay = max(decay, 0.05)  # giữ mức phạt tối thiểu
                     p_final[past_id] *= (1.0 - decay)
             
@@ -295,9 +352,6 @@ if __name__ == "__main__":
     # Corpus tiếng Việt để xây dựng từ điển và học n-gram
     # Corpus càng lớn -> n-gram càng phong phú -> kết quả sinh càng tự nhiên
     training_texts = [
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 1: Chào hỏi & Giao tiếp hàng ngày (20 câu)
-        # ══════════════════════════════════════════════════════════
         "Xin chào các bạn",
         "Xin chào thế giới",
         "Xin chào tất cả mọi người",
@@ -318,10 +372,6 @@ if __name__ == "__main__":
         "Chúc các bạn luôn vui vẻ",
         "Chúc mọi người thành công",
         "Hẹn gặp lại các bạn vào tuần sau",
-
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 2: Giới thiệu bản thân & Cuộc sống sinh viên (25 câu)
-        # ══════════════════════════════════════════════════════════
         "Tôi đang học lập trình",
         "Tôi là sinh viên năm ba",
         "Tôi là sinh viên ngành công nghệ thông tin",
@@ -347,10 +397,6 @@ if __name__ == "__main__":
         "Các bạn hãy xem ví dụ sau đây",
         "Tất cả mọi người đều có thể học lập trình",
         "Bạn có thể học lập trình dễ dàng",
-
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 3: Thời tiết & Hoạt động hàng ngày (15 câu)
-        # ══════════════════════════════════════════════════════════
         "Hôm nay trời đẹp quá",
         "Hôm nay trời nắng đẹp",
         "Hôm nay tôi đi học",
@@ -366,10 +412,6 @@ if __name__ == "__main__":
         "Tối nay tôi sẽ viết code",
         "Một ngày tốt lành cho tất cả",
         "Một ngày mới bắt đầu với năng lượng tích cực",
-
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 4: Công nghệ & Lập trình (30 câu)
-        # ══════════════════════════════════════════════════════════
         "Python là ngôn ngữ lập trình tuyệt vời",
         "Python là ngôn ngữ lập trình phổ biến nhất hiện nay",
         "Python rất dễ học và rất mạnh mẽ",
@@ -400,10 +442,6 @@ if __name__ == "__main__":
         "Bài toán này có độ phức tạp thời gian là bậc hai",
         "Độ phức tạp bậc hai là thách thức lớn nhất",
         "Tối ưu thuật toán là công việc rất quan trọng",
-
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 5: AI & Deep Learning (30 câu)
-        # ══════════════════════════════════════════════════════════
         "Transformer thay đổi thế giới trí tuệ nhân tạo",
         "Transformer là kiến trúc nền tảng của các mô hình ngôn ngữ lớn",
         "Transformer sử dụng cơ chế Self Attention để xử lý ngôn ngữ",
@@ -434,10 +472,6 @@ if __name__ == "__main__":
         "Query Key Value là ba thành phần của Attention",
         "Causal Mask đảm bảo mỗi token chỉ nhìn về phía trước",
         "Vectorization giúp tính toán nhanh hơn hàng trăm lần",
-
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 6: Thuyết trình & Đồ án (20 câu)
-        # ══════════════════════════════════════════════════════════
         "Đồ án này trình bày về cơ chế Self Attention",
         "Đồ án gồm năm thành phần chính",
         "Nhóm chúng em xin trình bày đồ án giữa kỳ",
@@ -458,10 +492,6 @@ if __name__ == "__main__":
         "Chúng ta có thể thấy kết quả rất rõ ràng",
         "Thực nghiệm chứng minh lý thuyết là đúng",
         "Cảm ơn thầy cô và các bạn đã lắng nghe",
-
-        # ══════════════════════════════════════════════════════════
-        # NHÓM 7: Câu bổ sung cho n-gram coverage (40 câu)
-        # ══════════════════════════════════════════════════════════
         "Thế giới đang thay đổi nhanh chóng",
         "Thế giới công nghệ luôn đổi mới",
         "Công nghệ thông tin là ngành rất có triển vọng",
@@ -502,11 +532,134 @@ if __name__ == "__main__":
         "Chúng tôi hy vọng thầy cô hài lòng",
         "Xin chân thành cảm ơn tất cả mọi người",
         "Xin cảm ơn và hẹn gặp lại",
+        "Con chó là loài động vật rất trung thành",
+        "Con mèo thích ngủ dưới ánh nắng mặt trời",
+        "Tôi nuôi một con chó màu vàng rất đáng yêu",
+        "Con mèo kêu meo meo đòi ăn cá",
+        "Con chó sủa gâu gâu khi thấy người lạ",
+        "Nuôi thú cưng giúp giảm bớt căng thẳng",
+        "Con mèo thích chơi đùa với cuộn len",
+        "Con chó thích chạy bộ cùng tôi mỗi sáng",
+        "Chú mèo con lông trắng muốt rất tinh nghịch",
+        "Tôi rất yêu thương con vật nuôi của mình",
+        "Con chim hót líu lo trên cành cây",
+        "Đàn cá bơi lội tung tăng dưới hồ nước",
+        "Cuối tuần tôi thường đi uống trà sữa với bạn bè",
+        "Tôi thích đọc sách khoa học vào ban đêm",
+        "Nghe nhạc giúp tôi tập trung viết code hơn",
+        "Chúng tôi đi xem phim chiếu rạp vào tối thứ bảy",
+        "Chạy bộ mỗi ngày giúp nâng cao sức khỏe",
+        "Tôi thích đi du lịch khắp đất nước Việt Nam",
+        "Ăn cơm tối cùng gia đình rất ấm áp",
+        "Tôi đang tập nấu ăn một số môn học mới",
+        "Chụp ảnh phong cảnh là sở thích của tôi",
+        "Hãy uống nhiều nước mỗi ngày để giữ sức khỏe",
+        "Bóng đá là môn thể thao vua được yêu thích nhất",
+        "Tôi thích ngắm hoàng hôn trên bãi biển",
+        "Toán học và Vật lý là các môn học thú vị",
+        "Học tiếng Anh giúp mở rộng cơ hội nghề nghiệp",
+        "Thầy cô giáo luôn tận tâm truyền đạt kiến thức",
+        "Trường đại học có khuôn viên rất rộng và đẹp",
+        "Tôi cần vượt qua kỳ thi tiếng Anh tuần tới",
+        "Học sinh cần làm bài tập đầy đủ trước khi lên lớp",
+        "Thư viện trường có rất nhiều tài liệu quý giá",
+        "Chúng tôi thảo luận nhóm rất tích cực trong giờ học",
+        "Hoàn thành khóa học giúp tôi tự tin hơn",
+        "Kiến thức lý thuyết cần đi đôi với thực hành",
+        "Bạn nên ghi chép bài đầy đủ để dễ ôn tập",
+        "Đăng ký môn học kỳ này rất cạnh tranh",
+        "Gia đình là điểm tựa bình yên nhất của mỗi người",
+        "Bố mẹ luôn là người ủng hộ mọi quyết định của tôi",
+        "Tôi có một người anh trai rất thông minh",
+        "Chị gái tôi nấu ăn cực kỳ ngon",
+        "Hãy luôn trân trọng những người bạn chân thành",
+        "Chúng tôi thường về thăm ông bà vào dịp Tết",
+        "Chia sẻ khó khăn giúp tình bạn thêm bền chặt",
+        "Mẹ tôi luôn chăm sóc gia đình rất chu đáo",
+        "Bố tôi thích trồng cây và nuôi chim cảnh",
+        "Gia đình tôi sum họp hạnh phúc bên mâm cơm",
+        "Anh em trong nhà cần yêu thương và giúp đỡ nhau",
+        "Tôi nhận được nhiều lời chúc tốt đẹp từ bạn bè",
+        "Tôi mới mua một chiếc laptop cấu hình mạnh",
+        "Điện thoại thông minh là vật bất ly thân ngày nay",
+        "Xe máy là phương tiện phổ biến nhất ở Việt Nam",
+        "Tôi đi học bằng xe đạp mỗi ngày để bảo vệ môi trường",
+        "Ngồi trên xe buýt giúp tôi có thời gian đọc sách",
+        "Lái ô tô đòi hỏi sự tập trung cao độ",
+        "Chiếc bàn làm việc của tôi luôn được sắp xếp gọn gàng",
+        "Quyển sách này chứa đựng nhiều bài học ý nghĩa",
+        "Tôi cần sạc pin cho máy tính ngay lập tức",
+        "Đồng hồ treo tường nhắc nhở tôi quản lý thời gian",
+        "Tôi thích mang theo một cuốn sổ tay nhỏ",
+        "Đèn bàn cung cấp ánh sáng tốt để học bài",
+        "Tôi cảm thấy rất hạnh phúc khi đạt điểm cao",
+        "Đừng lo lắng về những điều chưa xảy ra",
+        "Sự kiên trì sẽ giúp bạn vượt qua mọi thử thách",
+        "Tôi rất bất ngờ trước kết quả của cuộc thi",
+        "Hãy luôn giữ tinh thần lạc quan trong cuộc sống",
+        "Cảm giác hoàn thành công việc thật tuyệt vời",
+        "Tôi cảm thấy tự hào về nỗ lực của bản thân",
+        "Sự tự tin giúp bạn tỏa sáng trước đám đông",
+        "Tôi luôn tò mò muốn khám phá những điều mới lạ",
+        "Hãy học cách lắng nghe ý kiến của người khác",
+        "Sự chân thành luôn chạm đến trái tim con người",
+        "Tôi cảm thấy biết ơn vì những gì mình đang có",
+        "Làm việc chăm chỉ là chìa khóa của thành công",
+        "Tìm kiếm một công việc phù hợp không hề dễ dàng",
+        "Kỹ năng giao tiếp rất quan trọng khi đi phỏng vấn",
+        "Tôi muốn tích lũy thêm nhiều kinh nghiệm thực tế",
+        "Đồng nghiệp ở công ty mới rất thân thiện",
+        "Chúng tôi cùng nhau thảo luận kế hoạch dự án",
+        "Viết báo cáo tuần là công việc bắt buộc",
+        "Tôi hy vọng sẽ được thăng tiến trong tương lai",
+        "Quản lý thời gian hiệu quả giúp giảm áp lực công việc",
+        "Môi trường làm việc năng động giúp tôi phát triển",
+        "Hãy chuẩn bị hồ sơ xin việc thật ấn tượng",
+        "Tôi yêu thích công việc lập trình của mình",
+        "Cơn mưa rào mùa hạ làm dịu đi cái nắng nóng",
+        "Bầu trời đêm đầy sao lấp lánh cực kỳ lãng mạn",
+        "Mùa thu lá vàng rơi khắp các con đường",
+        "Mùa đông trời lạnh buốt khiến ai cũng muốn ở nhà",
+        "Hoa mai hoa đào nở rộ báo hiệu mùa xuân về",
+        "Không khí buổi sáng sớm ở quê rất trong lành",
+        "Những ngọn núi trùng điệp hùng vĩ giữa mây trời",
+        "Tiếng sóng biển rì rào mang lại cảm giác bình yên",
+        "Ánh nắng ban mai ấm áp chiếu qua kẽ lá",
+        "Cánh đồng lúa chín vàng óng trải dài vô tận",
+        "Bảo vệ rừng là bảo vệ cuộc sống của chính chúng ta",
+        "Thời tiết hôm nay se se lạnh rất dễ chịu",
+        "Xin chào, bạn tên là gì?",
+        "Hôm nay công việc của bạn thế nào?",
+        "Bạn có muốn đi ăn trưa cùng tôi không?",
+        "Cảm ơn bạn đã nhiệt tình giúp đỡ tôi",
+        "Chúc mừng sinh nhật bạn thân yêu của tôi",
+        "Mọi chuyện rồi sẽ ổn thôi, đừng quá lo lắng",
+        "Thật tuyệt vời khi được đồng hành cùng bạn",
+        "Tôi rất mong chờ chuyến đi sắp tới",
+        "Hãy giữ liên lạc nhé, đừng quên tôi đấy",
+        "Chúc bạn thượng lộ bình an và gặp nhiều may mắn",
+        "Xin lỗi vì đã làm phiền bạn vào lúc này",
+        "Không sao đâu, tôi rất vui lòng được hỗ trợ bạn",
+        "Mỗi ngày là một cơ hội để bắt đầu lại",
+        "Thất bại là mẹ của thành công, hãy tiếp tục cố gắng",
+        "Hãy sống trọn vẹn từng khoảnh khắc của hiện tại",
+        "Hành trình vạn dặm luôn bắt đầu từ một bước chân",
+        "Ước mơ chỉ thành hiện thực khi bạn hành động",
+        "Hãy tử tế với mọi người xung quanh bạn",
+        "Sức mạnh lớn nhất nằm ở chính bên trong bạn",
+        "Không có gì là không thể nếu bạn có quyết tâm",
+        "Hãy học hỏi từ những sai lầm của quá khứ",
+        "Cuộc sống là một bức tranh, hãy tự tô màu cho nó",
+        "Hãy luôn mỉm cười và đón nhận mọi điều xảy ra",
+        "Sự cho đi mang lại nhiều niềm vui hơn nhận lại",
     ]
     
     # Khởi tạo, xây dựng vocab (word-level), và học n-gram
     generator = TransformerGenerator(d_model=64, num_heads=4)
     generator.build(training_texts)
+    
+    # Nạp trọng số đã huấn luyện (nếu có file model_weights.npy)
+    generator.load_trained_weights("model_weights.npy")
     
     # ── Demo 1: Forward Pass ──
     print("\n" + "─" * 60)

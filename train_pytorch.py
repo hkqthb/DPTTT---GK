@@ -1,25 +1,150 @@
+"""
+Huấn luyện mô hình Transformer bằng PyTorch, sau đó xuất trọng số sang NumPy.
+
+Mục đích:
+    Mô hình NumPy trong main.py chỉ có forward pass (không có backpropagation),
+    nên các trọng số luôn là ngẫu nhiên → Attention phân bố đều, vô nghĩa.
+
+    Script này giải quyết vấn đề bằng cách:
+    1. Xây dựng mô hình PyTorch có kiến trúc GIỐNG HỆT mô hình NumPy
+    2. Huấn luyện trên corpus tiếng Việt (autoregressive language modeling)
+    3. Xuất trọng số đã train thành file .npy
+    4. Mô hình NumPy nạp trọng số này → Attention có ý nghĩa ngữ nghĩa
+
+Lưu ý quan trọng về chuyển đổi trọng số:
+    - PyTorch Linear: y = x @ W^T + b  (W shape: output_dim × input_dim)
+    - NumPy LinearLayer: y = x @ W + b  (W shape: input_dim × output_dim)
+    → Phải TRANSPOSE ma trận W khi xuất từ PyTorch sang NumPy.
+"""
+
 import os
 import sys
-import time
+import math
 import numpy as np
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
-from typing import List, Optional
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-# Thêm thư mục gốc vào path để import các package
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from main import TransformerGenerator
+# Thêm thư mục gốc vào path để import được Tokenizer
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from data.tokenizer import Tokenizer
-from core.math_utils import stable_softmax
-from attention.multi_head import MultiHeadAttention
-from experiments.benchmark import naive_attention_core, vectorized_attention_core
 
-app = FastAPI(title="Multi-Head Attention Visualizer API")
 
-# Mảng training texts mặc định giống trong main.py
-TRAINING_TEXTS = [
+# ══════════════════════════════════════════════════════════════════════════════
+# CẤU HÌNH HUẤN LUYỆN (Hyperparameters)
+# ══════════════════════════════════════════════════════════════════════════════
+D_MODEL = 64        # Phải trùng với d_model trong main.py
+NUM_HEADS = 4       # Phải trùng với num_heads trong main.py
+EPOCHS = 300        # Số vòng huấn luyện (tăng vì corpus nhỏ)
+LR = 0.003          # Learning rate
+BATCH_SIZE = 16     # Kích thước mini-batch
+WEIGHT_DECAY = 0.01 # Regularization
+WARMUP_STEPS = 50   # Warmup cho learning rate scheduler
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MÔ HÌNH PYTORCH (kiến trúc tương thích 1:1 với NumPy)
+# ══════════════════════════════════════════════════════════════════════════════
+class PyTorchTransformerLM(nn.Module):
+    """
+    Mô hình Transformer Language Model tối giản.
+    
+    Kiến trúc giống hệt TransformerGenerator trong main.py:
+    - Embedding Layer
+    - Sinusoidal Positional Encoding (giống nhau, không cần train)
+    - Single-layer Multi-Head Self-Attention (có Causal Mask)
+    - Output Projection → vocab logits
+    """
+    
+    def __init__(self, vocab_size, d_model, num_heads, max_seq_len=128):
+        super().__init__()
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        
+        # Embedding (sẽ xuất sang tokenizer.embedding_matrix)
+        self.embedding = nn.Embedding(vocab_size, d_model)
+        
+        # Multi-Head Attention projections (sẽ xuất sang mha.W_Q/K/V/O)
+        self.q_proj = nn.Linear(d_model, d_model)
+        self.k_proj = nn.Linear(d_model, d_model)
+        self.v_proj = nn.Linear(d_model, d_model)
+        self.out_proj = nn.Linear(d_model, d_model)
+        
+        # Output projection (sẽ xuất sang output_layer)
+        self.output_layer = nn.Linear(d_model, vocab_size)
+        
+        # Pre-compute positional encoding (deterministic, giống NumPy)
+        self.register_buffer('pe', self._sinusoidal_pe(max_seq_len, d_model))
+    
+    @staticmethod
+    def _sinusoidal_pe(max_len, d_model):
+        """Tạo Sinusoidal Positional Encoding (giống hàm trong math_utils.py)."""
+        pe = torch.zeros(max_len, d_model)
+        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(
+            torch.arange(0, d_model, 2, dtype=torch.float) 
+            * -(math.log(10000.0) / d_model)
+        )
+        pe[:, 0::2] = torch.sin(position * div_term)
+        pe[:, 1::2] = torch.cos(position * div_term[:pe[:, 1::2].shape[1]])
+        return pe
+    
+    def forward(self, x):
+        """
+        Forward pass.
+        
+        :param x: Token IDs, shape (batch_size, seq_len)
+        :return: logits, shape (batch_size, seq_len, vocab_size)
+        """
+        batch_size, seq_len = x.size()
+        
+        # 1. Embedding + Positional Encoding
+        emb = self.embedding(x)  # (batch, seq_len, d_model)
+        x_enc = emb + self.pe[:seq_len].unsqueeze(0)
+        
+        # 2. Project Q, K, V
+        Q = self.q_proj(x_enc)
+        K = self.k_proj(x_enc)
+        V = self.v_proj(x_enc)
+        
+        # 3. Split Heads: (batch, seq, d_model) → (batch, heads, seq, d_k)
+        Q = Q.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        K = K.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        V = V.view(batch_size, seq_len, self.num_heads, self.d_k).transpose(1, 2)
+        
+        # 4. Scaled Dot-Product Attention + Causal Mask
+        scores = torch.matmul(Q, K.transpose(-2, -1)) / math.sqrt(self.d_k)
+        
+        # Causal mask: che các token tương lai (upper triangle)
+        causal_mask = torch.triu(
+            torch.ones(seq_len, seq_len, device=x.device), diagonal=1
+        ).bool()
+        scores = scores.masked_fill(causal_mask.unsqueeze(0).unsqueeze(1), float('-inf'))
+        
+        attn_weights = F.softmax(scores, dim=-1)
+        context = torch.matmul(attn_weights, V)
+        
+        # 5. Concat Heads: (batch, heads, seq, d_k) → (batch, seq, d_model)
+        context = context.transpose(1, 2).contiguous().view(batch_size, seq_len, self.d_model)
+        
+        # 6. Output Projection
+        out = self.out_proj(context)
+        logits = self.output_layer(out)
+        
+        return logits
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# DỮ LIỆU HUẤN LUYỆN (lấy từ main.py)
+# ══════════════════════════════════════════════════════════════════════════════
+# Import trực tiếp training_texts sẽ chạy main.py → không muốn thế.
+# Copy danh sách corpus ở đây để script chạy độc lập.
+
+def get_training_texts():
+    """Trả về corpus huấn luyện tiếng Việt (giống hệt trong main.py)."""
+    return [
         "Xin chào các bạn",
         "Xin chào thế giới",
         "Xin chào tất cả mọi người",
@@ -322,244 +447,230 @@ TRAINING_TEXTS = [
         "Sự cho đi mang lại nhiều niềm vui hơn nhận lại",
     ]
 
-# State toàn cục
-model_state = {
-    "generator": None,
-    "d_model": 64,
-    "num_heads": 4
-}
 
-def init_generator(d_model=64, num_heads=4):
-    gen = TransformerGenerator(d_model=d_model, num_heads=num_heads)
-    gen.build(TRAINING_TEXTS)
-    gen.load_trained_weights("model_weights.npy")
-    model_state["generator"] = gen
-    model_state["d_model"] = d_model
-    model_state["num_heads"] = num_heads
-    return gen
-
-# Khởi tạo lần đầu
-init_generator()
-
-class InitParams(BaseModel):
-    d_model: int = 64
-    num_heads: int = 4
-
-class TextParams(BaseModel):
-    text: str
-
-class GenerateStepParams(BaseModel):
-    current_text: str
-    temperature: float = 0.5
-    blend_ratio: float = 0.95
-    repetition_penalty: float = 0.5
-    top_k: int = 15
-    generated_ids: Optional[List[int]] = None
-
-class BenchmarkParams(BaseModel):
-    seq_lengths: List[int] = [10, 50, 100, 200, 400]
-
-@app.post("/api/init")
-def api_init(params: InitParams):
-    try:
-        init_generator(d_model=params.d_model, num_heads=params.num_heads)
-        return {"status": "success", "vocab_size": model_state["generator"].tokenizer.vocab_size}
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-
-@app.post("/api/tokenize")
-def api_tokenize(params: TextParams):
-    gen = model_state["generator"]
-    if not gen:
-        raise HTTPException(status_code=400, detail="Model is not initialized")
-    token_ids = gen.tokenizer.encode(params.text, add_special_tokens=False)
-    tokens = [gen.tokenizer.id_to_token[tid] for tid in token_ids]
-    return {"tokens": tokens, "token_ids": token_ids}
-
-@app.post("/api/attention")
-def api_attention(params: TextParams):
-    gen = model_state["generator"]
-    if not gen:
-        raise HTTPException(status_code=400, detail="Model is not initialized")
+def prepare_data(tokenizer, texts):
+    """
+    Chuẩn bị dữ liệu huấn luyện cho autoregressive language modeling.
     
-    text = params.text
-    if gen.tokenizer.mode == "word" and not text.strip():
-        return {"tokens": [], "attention_weights": []}
+    Mỗi câu "A B C D" → Input: [BOS, A, B, C] → Target: [A, B, C, D]
+    Mô hình học dự đoán token tiếp theo tại mỗi vị trí.
+    """
+    input_seqs = []
+    target_seqs = []
+    
+    for text in texts:
+        ids = tokenizer.encode(text, add_special_tokens=True)  # [BOS, ..., EOS]
+        if len(ids) > 2:  # Cần ít nhất BOS + 1 token + EOS
+            input_seqs.append(ids[:-1])   # [BOS, t1, t2, ..., tn]
+            target_seqs.append(ids[1:])   # [t1, t2, ..., tn, EOS]
+    
+    # Padding tất cả sequences về cùng độ dài
+    pad_id = tokenizer.token_to_id[Tokenizer.PAD_TOKEN]
+    max_len = max(len(s) for s in input_seqs)
+    
+    X = [s + [pad_id] * (max_len - len(s)) for s in input_seqs]
+    Y = [s + [pad_id] * (max_len - len(s)) for s in target_seqs]
+    
+    return torch.tensor(X, dtype=torch.long), torch.tensor(Y, dtype=torch.long)
 
-    # Pipeline logic forward (lấy attention_weights)
-    X = gen.tokenizer.text_to_embedding(text, add_special_tokens=False)
-    seq_len = X.shape[1]
+
+def export_weights(model, output_path):
+    """
+    Xuất trọng số PyTorch sang định dạng NumPy (.npy).
     
-    # Cộng positional encoding
-    from core.math_utils import sinusoidal_positional_encoding
-    position_encoding = sinusoidal_positional_encoding(seq_len, gen.d_model)
-    X = X + position_encoding[np.newaxis, :, :]
+    Chuyển đổi:
+        PyTorch Linear: y = x @ W^T + b  →  W shape (out, in)
+        NumPy LinearLayer: y = x @ W + b  →  W shape (in, out)
+        → W_numpy = W_pytorch.T
+    """
+    weights = {
+        # Embedding matrix
+        "embedding_matrix": model.embedding.weight.detach().cpu().numpy(),
+        
+        # Multi-Head Attention: W_Q
+        "W_Q_W": model.q_proj.weight.detach().cpu().numpy().T,   # (in, out)
+        "W_Q_b": model.q_proj.bias.detach().cpu().numpy().reshape(1, -1),
+        
+        # Multi-Head Attention: W_K
+        "W_K_W": model.k_proj.weight.detach().cpu().numpy().T,
+        "W_K_b": model.k_proj.bias.detach().cpu().numpy().reshape(1, -1),
+        
+        # Multi-Head Attention: W_V
+        "W_V_W": model.v_proj.weight.detach().cpu().numpy().T,
+        "W_V_b": model.v_proj.bias.detach().cpu().numpy().reshape(1, -1),
+        
+        # Multi-Head Attention: W_O (Output Projection)
+        "W_O_W": model.out_proj.weight.detach().cpu().numpy().T,
+        "W_O_b": model.out_proj.bias.detach().cpu().numpy().reshape(1, -1),
+        
+        # Output Layer (vocab projection)
+        "output_layer_W": model.output_layer.weight.detach().cpu().numpy().T,
+        "output_layer_b": model.output_layer.bias.detach().cpu().numpy().reshape(1, -1),
+    }
     
-    # Multi-head forward và lấy weights
-    padding_mask = np.ones((X.shape[0], X.shape[1]), dtype=bool)
-    _, attention_weights = gen.mha.forward(
-        X, mask=padding_mask, causal=True, return_attention=True
+    np.save(output_path, weights)
+    print(f"\n[Export] Đã lưu trọng số vào: {output_path}")
+    print(f"  Các key: {list(weights.keys())}")
+    for key, val in weights.items():
+        print(f"    {key}: shape {val.shape}")
+
+
+def train():
+    """Hàm huấn luyện chính."""
+    
+    print("=" * 70)
+    print("  HUẤN LUYỆN MÔ HÌNH TRANSFORMER BẰNG PYTORCH")
+    print("  (Xuất trọng số sang NumPy để dùng trong demo)")
+    print("=" * 70)
+    
+    # ── 1. Chuẩn bị Tokenizer và Dữ liệu ──
+    training_texts = get_training_texts()
+    
+    tokenizer = Tokenizer(embed_dim=D_MODEL, mode="word")
+    tokenizer.build_vocab(training_texts)
+    vocab_size = tokenizer.vocab_size
+    pad_id = tokenizer.token_to_id[Tokenizer.PAD_TOKEN]
+    
+    X_train, Y_train = prepare_data(tokenizer, training_texts)
+    print(f"\n[Data] Số câu: {len(training_texts)} | Vocab: {vocab_size} tokens")
+    print(f"[Data] X shape: {X_train.shape} | Y shape: {Y_train.shape}")
+    
+    # ── 2. Khởi tạo Model ──
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"[Device] Sử dụng: {device}")
+    
+    model = PyTorchTransformerLM(vocab_size, D_MODEL, NUM_HEADS).to(device)
+    
+    total_params = sum(p.numel() for p in model.parameters())
+    print(f"[Model] Tổng tham số: {total_params:,}")
+    
+    # ── 3. Optimizer & Loss ──
+    optimizer = torch.optim.AdamW(
+        model.parameters(), 
+        lr=LR, 
+        weight_decay=WEIGHT_DECAY
     )
     
-    # Trả về tokens
-    tokens = gen.tokenizer._tokenize(text)
+    # Learning rate scheduler: warmup → cosine decay
+    def lr_lambda(step):
+        if step < WARMUP_STEPS:
+            return step / max(1, WARMUP_STEPS)
+        progress = (step - WARMUP_STEPS) / max(1, EPOCHS * (len(X_train) // BATCH_SIZE + 1) - WARMUP_STEPS)
+        return max(0.1, 0.5 * (1 + math.cos(math.pi * progress)))
     
-    # attention_weights shape: (batch_size, num_heads, query_len, key_len)
-    # Vì batch_size = 1, lấy index 0 và convert sang list
-    weights_list = attention_weights[0].tolist() # shape (num_heads, seq_len, seq_len)
-
-    return {
-        "tokens": tokens,
-        "attention_weights": weights_list
-    }
-
-@app.post("/api/generate_step")
-def api_generate_step(params: GenerateStepParams):
-    gen = model_state["generator"]
-    if not gen:
-        raise HTTPException(status_code=400, detail="Model is not initialized")
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
     
-    current_text = params.current_text
-    temperature = params.temperature
-    blend_ratio = params.blend_ratio
-    repetition_penalty = params.repetition_penalty
-
-    # Chạy forward pass
-    X = gen.tokenizer.text_to_embedding(current_text, add_special_tokens=False)
-    seq_len = X.shape[1]
+    criterion = nn.CrossEntropyLoss(ignore_index=pad_id)
     
-    from core.math_utils import sinusoidal_positional_encoding
-    position_encoding = sinusoidal_positional_encoding(seq_len, gen.d_model)
-    X = X + position_encoding[np.newaxis, :, :]
+    # ── 4. Vòng lặp huấn luyện ──
+    print(f"\n{'─' * 70}")
+    print(f"  Bắt đầu huấn luyện: {EPOCHS} epochs, batch_size={BATCH_SIZE}, lr={LR}")
+    print(f"{'─' * 70}\n")
     
-    padding_mask = np.ones((X.shape[0], X.shape[1]), dtype=bool)
-    logits, attention_weights = gen.mha.forward(
-        X, mask=padding_mask, causal=True, return_attention=True
-    )
-    logits = gen.output_layer.forward(logits)
+    model.train()
+    best_loss = float('inf')
     
-    next_logits = logits[0, -1, :] / temperature
-    for sid in gen._special_token_ids:
-        next_logits[sid] = -1e9
+    for epoch in range(EPOCHS):
+        epoch_loss = 0.0
+        num_batches = 0
         
-    p_model = stable_softmax(next_logits)
-    
-    # N-gram
-    if gen.tokenizer.mode == "word":
-        words = current_text.split()
-    else:
-        words = list(current_text)
+        # Shuffle dữ liệu mỗi epoch
+        perm = torch.randperm(len(X_train))
+        X_shuffled = X_train[perm]
+        Y_shuffled = Y_train[perm]
         
-    unk_id = gen.tokenizer.token_to_id[Tokenizer.UNK_TOKEN]
-    p_ngram = None
-    if len(words) >= 2:
-        id_a = gen.tokenizer.token_to_id.get(words[-2], unk_id)
-        id_b = gen.tokenizer.token_to_id.get(words[-1], unk_id)
-        trigram_key = (id_a, id_b)
-        if trigram_key in gen.trigram_probs:
-            p_ngram = gen.trigram_probs[trigram_key]
+        for i in range(0, len(X_train), BATCH_SIZE):
+            x_batch = X_shuffled[i:i+BATCH_SIZE].to(device)
+            y_batch = Y_shuffled[i:i+BATCH_SIZE].to(device)
             
-    if p_ngram is None and len(words) >= 1:
-        last_id = gen.tokenizer.token_to_id.get(words[-1], unk_id)
-        p_ngram = gen.bigram_probs[last_id]
-        
-    if p_ngram is None:
-        p_ngram = np.ones_like(p_model) / len(p_model)
-        
-    p_final = blend_ratio * p_ngram + (1 - blend_ratio) * p_model
-    
-    # Phạt lặp (ở đây ta tự decode tokens đã sinh ra)
-    # Lấy 15 tokens gần nhất từ current_text
-    token_ids = gen.tokenizer.encode(current_text, add_special_tokens=False)
-    if repetition_penalty > 0 and len(token_ids) > 0:
-        window = token_ids[-15:]
-        for i, past_id in enumerate(reversed(window)):
-            # Token gần nhất bị phạt nặng nhất, xa hơn thì giảm dần chậm hơn
-            decay = repetition_penalty * (1.0 - i * 0.06)
-            decay = max(decay, 0.05)  # giữ mức phạt tối thiểu
-            p_final[past_id] *= (1.0 - decay)
+            optimizer.zero_grad()
             
-    p_final = p_final / (p_final.sum() + 1e-12)
-    
-    # Top 10 tokens ứng viên
-    top_indices = np.argsort(p_final)[::-1][:10]
-    top_candidates = []
-    for idx in top_indices:
-        token_str = gen.tokenizer.id_to_token[idx]
-        top_candidates.append({
-            "token": token_str,
-            "prob": float(p_final[idx]),
-            "p_model": float(p_model[idx]),
-            "p_ngram": float(p_ngram[idx])
-        })
-        
-    # Sample token tiếp theo
-    next_token_id = np.random.choice(len(p_final), p=p_final)
-    next_token = gen.tokenizer.id_to_token[next_token_id]
-    
-    # Nối từ
-    new_text = current_text
-    if gen.tokenizer.mode == "word":
-        new_text += " " + next_token
-    else:
-        new_text += next_token
-        
-    # Trả về kết quả
-    weights_list = attention_weights[0].tolist() # (num_heads, seq_len, seq_len)
-    tokens = gen.tokenizer._tokenize(current_text)
-    
-    return {
-        "next_token": next_token,
-        "new_text": new_text,
-        "top_candidates": top_candidates,
-        "tokens": tokens,
-        "attention_weights": weights_list
-    }
-
-@app.post("/api/benchmark")
-def api_benchmark(params: BenchmarkParams):
-    d_model = model_state["d_model"]
-    num_heads = model_state["num_heads"]
-    d_k = d_model // num_heads
-    batch_size = 1
-    
-    results = []
-    
-    for seq_len in params.seq_lengths:
-        # Generate random Q, K, V
-        Q = np.random.randn(batch_size, num_heads, seq_len, d_k)
-        K = np.random.randn(batch_size, num_heads, seq_len, d_k)
-        V = np.random.randn(batch_size, num_heads, seq_len, d_k)
-        
-        # Benchmark vectorized
-        start_t = time.perf_counter()
-        _ = vectorized_attention_core(Q, K, V, mask=None, causal=True)
-        time_vectorized = time.perf_counter() - start_t
-        
-        # Benchmark naive (giới hạn seq_len lớn vì naive cực kỳ chậm)
-        time_naive = None
-        if seq_len <= 150: # Naive O(L^2) trên Python list quá lớn sẽ bị timeout
-            start_t = time.perf_counter()
-            _ = naive_attention_core(Q, K, V, mask=None, causal=True)
-            time_naive = time.perf_counter() - start_t
+            logits = model(x_batch)  # (batch, seq_len, vocab_size)
             
-        results.append({
-            "seq_len": seq_len,
-            "vectorized_time_ms": round(time_vectorized * 1000, 3),
-            "naive_time_ms": round(time_naive * 1000, 3) if time_naive is not None else None
-        })
+            # Flatten: (batch*seq_len, vocab_size) vs (batch*seq_len,)
+            loss = criterion(
+                logits.view(-1, vocab_size), 
+                y_batch.view(-1)
+            )
+            
+            loss.backward()
+            
+            # Gradient clipping để ổn định quá trình train
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            
+            optimizer.step()
+            scheduler.step()
+            
+            epoch_loss += loss.item()
+            num_batches += 1
         
-    return {"results": results}
+        avg_loss = epoch_loss / num_batches
+        
+        if avg_loss < best_loss:
+            best_loss = avg_loss
+        
+        # In progress mỗi 20 epoch hoặc epoch đầu/cuối
+        if (epoch + 1) % 20 == 0 or epoch == 0 or epoch == EPOCHS - 1:
+            current_lr = optimizer.param_groups[0]['lr']
+            print(f"  Epoch {epoch+1:>4}/{EPOCHS} │ Loss: {avg_loss:.4f} │ "
+                  f"Best: {best_loss:.4f} │ LR: {current_lr:.6f}")
+    
+    print(f"\n{'─' * 70}")
+    print(f"  Huấn luyện hoàn tất! Best Loss: {best_loss:.4f}")
+    print(f"{'─' * 70}")
+    
+    # ── 5. Kiểm tra nhanh (Quick Validation) ──
+    print(f"\n{'─' * 70}")
+    print(f"  Kiểm tra nhanh: Sinh văn bản")
+    print(f"{'─' * 70}")
+    
+    model.eval()
+    test_prompts = ["Xin chào", "Tôi đang", "Học máy", "Chó màu vàng,"]
+    
+    with torch.no_grad():
+        for prompt in test_prompts:
+            ids = tokenizer.encode(prompt, add_special_tokens=False)
+            input_ids = torch.tensor([ids], dtype=torch.long).to(device)
+            
+            generated = list(ids)
+            for _ in range(12):
+                logits = model(input_ids)
+                next_logits = logits[0, -1, :] / 0.7  # temperature
+                
+                # Mask special tokens
+                for special in [Tokenizer.PAD_TOKEN, Tokenizer.UNK_TOKEN, Tokenizer.BOS_TOKEN]:
+                    if special in tokenizer.token_to_id:
+                        next_logits[tokenizer.token_to_id[special]] = float('-inf')
+                
+                probs = F.softmax(next_logits, dim=-1)
+                
+                # Top-k sampling
+                top_k = 10
+                top_probs, top_indices = torch.topk(probs, top_k)
+                top_probs = top_probs / top_probs.sum()
+                idx = torch.multinomial(top_probs, 1)
+                next_id = top_indices[idx].item()
+                
+                # Dừng nếu gặp EOS
+                eos_id = tokenizer.token_to_id.get(Tokenizer.EOS_TOKEN)
+                if next_id == eos_id:
+                    break
+                
+                generated.append(next_id)
+                input_ids = torch.tensor([generated], dtype=torch.long).to(device)
+            
+            result = " ".join(tokenizer.id_to_token.get(i, "?") for i in generated)
+            print(f'  "{prompt}" → "{result}"')
+    
+    # ── 6. Xuất trọng số ──
+    output_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_weights.npy")
+    export_weights(model, output_path)
+    
+    print(f"\n{'=' * 70}")
+    print(f"  HOÀN TẤT! File trọng số: model_weights.npy")
+    print(f"  Tiếp theo: Chạy main.py hoặc app.py, trọng số sẽ tự động được nạp.")
+    print(f"{'=' * 70}\n")
 
-# Router phục vụ file tĩnh của frontend
-@app.get("/", response_class=HTMLResponse)
-def get_index():
-    # Chúng ta sẽ đọc trực tiếp từ thư mục ui/index.html
-    ui_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui", "index.html")
-    if os.path.exists(ui_path):
-        with open(ui_path, "r", encoding="utf-8") as f:
-            return HTMLResponse(content=f.read())
-    return HTMLResponse(content="<h3>UI files are loading... Please refresh.</h3>")
 
-# Mount thư mục tĩnh `ui` cho stylesheet và javascript
-app.mount("/static", StaticFiles(directory=os.path.join(os.path.dirname(os.path.abspath(__file__)), "ui")), name="static")
+if __name__ == "__main__":
+    train()
